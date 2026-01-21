@@ -149,7 +149,7 @@ def main():
         print("СОХРАНЕНИЕ ВИЗУАЛИЗАЦИИ")
         print("=" * 70)
 
-        plot_summary(result, config, save_path='/home/user/reynolds-model/result_stage1.png')
+        plot_summary(result, config, save_path='result_stage1.png')
 
     except ImportError:
         print("\nМодуль matplotlib не установлен, визуализация пропущена.")
