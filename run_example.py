@@ -66,12 +66,13 @@ def main():
     print("РЕШЕНИЕ УРАВНЕНИЯ РЕЙНОЛЬДСА")
     print("=" * 70)
 
-    result = solve_reynolds(config, method="direct")
+    result = solve_reynolds(config, method="sor")
 
     print(f"\nСТАТУС РЕШЕНИЯ:")
+    print(f"  Метод: {result.method.upper()}")
     print(f"  Сходимость: {'Да' if result.converged else 'Нет'}")
     print(f"  Итераций: {result.iterations}")
-    print(f"  Невязка: {result.residual:.2e}")
+    print(f"  Невязка (норм.): {result.residual:.2e}")
 
     print(f"\nРЕЗУЛЬТАТЫ:")
     print(f"  Максимальное безразмерное давление P_max = {result.P_max:.6f}")
@@ -99,7 +100,7 @@ def main():
     print("ПРОВЕРКА СЕТОЧНОЙ СХОДИМОСТИ")
     print("=" * 70)
 
-    grids = [(90, 25), (180, 50), (360, 100)]
+    grids = [(90, 25), (180, 50), (270, 75)]  # уменьшил мелкую сетку для скорости
     P_max_values = []
 
     for n_phi, n_z in grids:
@@ -109,9 +110,9 @@ def main():
             n_rpm=config.n_rpm, mu=config.mu,
             n_phi=n_phi, n_z=n_z
         )
-        res = solve_reynolds(cfg, method="direct")
+        res = solve_reynolds(cfg, method="sor")
         P_max_values.append(res.P_max)
-        print(f"  Сетка {n_phi:3d}×{n_z:3d}: P_max = {res.P_max:.6f}")
+        print(f"  Сетка {n_phi:3d}×{n_z:3d}: P_max = {res.P_max:.6f}, итераций: {res.iterations}")
 
     # Относительная разница
     delta_1 = abs(P_max_values[1] - P_max_values[0]) / P_max_values[2] * 100
@@ -135,7 +136,7 @@ def main():
             n_rpm=config.n_rpm, mu=config.mu,
             n_phi=180, n_z=50
         )
-        res = solve_reynolds(cfg, method="direct")
+        res = solve_reynolds(cfg, method="sor")
         print(f"  {eps:5.2f}  {res.P_max:10.4f}  {res.p_max/1e6:12.3f}  {res.h_min*1e6:12.2f}")
 
     # Визуализация (если matplotlib доступен)
