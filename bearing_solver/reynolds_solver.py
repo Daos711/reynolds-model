@@ -65,7 +65,7 @@ class ReynoldsSolver:
         self,
         config: BearingConfig,
         film_model: Optional[FilmModel] = None,
-        method: str = "direct"
+        method: str = "sor"
     ):
         """
         Args:
@@ -80,7 +80,8 @@ class ReynoldsSolver:
         # Параметры SOR
         self.omega_sor = 1.7      # параметр релаксации
         self.max_iter = 10000     # максимум итераций
-        self.tol = 1e-6           # допуск сходимости
+        self.min_iter = 100       # минимум итераций (для стабилизации кавитации)
+        self.tol = 1e-8           # допуск сходимости (строже для лучшей невязки)
 
     def solve(self) -> ReynoldsResult:
         """
@@ -231,11 +232,81 @@ class ReynoldsSolver:
 
             residual = max_change
 
-            if max_change < self.tol:
+            # Сходимость только после минимума итераций
+            if iteration >= self.min_iter and max_change < self.tol:
                 converged = True
-                return P, converged, iteration + 1, residual
+                # Вычисляем невязку PDE только для активной зоны (P > 0)
+                pde_residual = self._compute_pde_residual(
+                    P, H, dH_dphi, d_phi, d_Z, D_L_sq, n_phi, n_z
+                )
+                return P, converged, iteration + 1, pde_residual
 
-        return P, converged, self.max_iter, residual
+        # Вычисляем финальную невязку PDE
+        pde_residual = self._compute_pde_residual(
+            P, H, dH_dphi, d_phi, d_Z, D_L_sq, n_phi, n_z
+        )
+        return P, converged, self.max_iter, pde_residual
+
+    def _compute_pde_residual(
+        self,
+        P: np.ndarray,
+        H: np.ndarray,
+        dH_dphi: np.ndarray,
+        d_phi: float,
+        d_Z: float,
+        D_L_sq: float,
+        n_phi: int,
+        n_z: int,
+    ) -> float:
+        """
+        Вычислить невязку уравнения Рейнольдса только для активной зоны (P > 0).
+
+        Невязка: |∂/∂φ(H³ ∂P/∂φ) + (D/L)² ∂/∂Z(H³ ∂P/∂Z) - ∂H/∂φ|
+        """
+        H3 = H ** 3
+        max_residual = 0.0
+        count_active = 0
+        sum_residual = 0.0
+
+        a_phi = 1.0 / d_phi**2
+        a_z = D_L_sq / d_Z**2
+
+        for i in range(n_phi):
+            i_plus = (i + 1) % n_phi
+            i_minus = (i - 1) % n_phi
+
+            for j in range(1, n_z - 1):
+                # Только для активной зоны (P > 0)
+                if P[i, j] <= 0:
+                    continue
+
+                count_active += 1
+
+                # H³ на полуцелых узлах
+                H3_ip = 0.5 * (H3[i, j] + H3[i_plus, j])
+                H3_im = 0.5 * (H3[i, j] + H3[i_minus, j])
+                H3_jp = 0.5 * (H3[i, j] + H3[i, j + 1])
+                H3_jm = 0.5 * (H3[i, j] + H3[i, j - 1])
+
+                # Дискретный лапласиан (левая часть уравнения)
+                lhs = (a_phi * (H3_ip * (P[i_plus, j] - P[i, j]) -
+                               H3_im * (P[i, j] - P[i_minus, j])) +
+                       a_z * (H3_jp * (P[i, j + 1] - P[i, j]) -
+                              H3_jm * (P[i, j] - P[i, j - 1])))
+
+                # Правая часть
+                rhs = dH_dphi[i, j]
+
+                # Невязка
+                res = abs(lhs - rhs)
+                sum_residual += res
+                if res > max_residual:
+                    max_residual = res
+
+        # Возвращаем среднюю невязку (более стабильно)
+        if count_active > 0:
+            return sum_residual / count_active
+        return 0.0
 
     def _solve_direct(
         self,
@@ -375,26 +446,10 @@ class ReynoldsSolver:
             P = np.maximum(P, 0.0)
             iterations = cav_iter + 1
 
-        # Вычисляем невязку
-        residual = 0.0
-        for i in range(n_phi):
-            i_plus = (i + 1) % n_phi
-            i_minus = (i - 1) % n_phi
-            for j in range(1, n_z - 1):
-                if P[i, j] > 0:  # Только в активной зоне
-                    c_i_plus = a_phi * H3_phi_plus[i, j]
-                    c_i_minus = a_phi * H3_phi_minus[i, j]
-                    c_j_plus = a_z * H3_z_plus[i, j]
-                    c_j_minus = a_z * H3_z_minus[i, j]
-
-                    lap = (c_i_plus * (P[i_plus, j] - P[i, j]) -
-                           c_i_minus * (P[i, j] - P[i_minus, j]) +
-                           c_j_plus * (P[i, j + 1] - P[i, j]) -
-                           c_j_minus * (P[i, j] - P[i, j - 1]))
-
-                    res = abs(lap - dH_dphi[i, j])
-                    if res > residual:
-                        residual = res
+        # Вычисляем невязку PDE только для активной зоны
+        residual = self._compute_pde_residual(
+            P, H, dH_dphi, d_phi, d_Z, D_L_sq, n_phi, n_z
+        )
 
         return P, converged, iterations, residual
 
@@ -402,7 +457,7 @@ class ReynoldsSolver:
 def solve_reynolds(
     config: BearingConfig,
     film_model: Optional[FilmModel] = None,
-    method: str = "direct"
+    method: str = "sor"
 ) -> ReynoldsResult:
     """
     Удобная функция для решения уравнения Рейнольдса.
