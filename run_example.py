@@ -144,13 +144,17 @@ def main():
         import matplotlib
         matplotlib.use('Agg')  # Для сохранения без дисплея
         import matplotlib.pyplot as plt
+        import os
         from bearing_solver.visualization import plot_summary
+
+        # Создаём папку если её нет
+        os.makedirs('results/stage_1', exist_ok=True)
 
         print(f"\n{'='*70}")
         print("СОХРАНЕНИЕ ВИЗУАЛИЗАЦИИ")
         print("=" * 70)
 
-        plot_summary(result, config, save_path='result_stage1.png')
+        plot_summary(result, config, save_path='results/stage_1/pressure_field.png')
 
     except ImportError:
         print("\nМодуль matplotlib не установлен, визуализация пропущена.")
