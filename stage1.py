@@ -66,7 +66,7 @@ def main():
     print("РЕШЕНИЕ УРАВНЕНИЯ РЕЙНОЛЬДСА")
     print("=" * 70)
 
-    result = solve_reynolds(config, method="sor")
+    result = solve_reynolds(config, method="direct")
 
     print(f"\nСТАТУС РЕШЕНИЯ:")
     print(f"  Метод: {result.method.upper()}")
@@ -110,7 +110,7 @@ def main():
             n_rpm=config.n_rpm, mu=config.mu,
             n_phi=n_phi, n_z=n_z
         )
-        res = solve_reynolds(cfg, method="sor")
+        res = solve_reynolds(cfg, method="direct")
         P_max_values.append(res.P_max)
         print(f"  Сетка {n_phi:3d}×{n_z:3d}: P_max = {res.P_max:.6f}, итераций: {res.iterations}")
 
@@ -136,7 +136,7 @@ def main():
             n_rpm=config.n_rpm, mu=config.mu,
             n_phi=180, n_z=50
         )
-        res = solve_reynolds(cfg, method="sor")
+        res = solve_reynolds(cfg, method="direct")
         print(f"  {eps:5.2f}  {res.P_max:10.4f}  {res.p_max/1e6:12.3f}  {res.h_min*1e6:12.2f}")
 
     # Визуализация (если matplotlib доступен)
