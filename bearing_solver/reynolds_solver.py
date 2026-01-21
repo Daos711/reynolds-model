@@ -193,14 +193,14 @@ class ReynoldsSolver:
         self,
         config: BearingConfig,
         film_model: Optional[FilmModel] = None,
-        method: str = "direct"
+        method: str = "sor"
     ):
         self.config = config
         self.film_model = film_model or SmoothFilmModel(config)
         self.method = method
 
         # Параметры итерационных методов
-        self.omega = 1.5          # релаксация (1.0-1.9)
+        self.omega = 1.7          # релаксация (1.0-1.9, оптимум ~1.7)
         self.max_iter = 10000
         self.min_iter = 50
         self.tol = 1e-6
@@ -398,7 +398,7 @@ class ReynoldsSolver:
 def solve_reynolds(
     config: BearingConfig,
     film_model: Optional[FilmModel] = None,
-    method: str = "direct"
+    method: str = "sor"
 ) -> ReynoldsResult:
     """
     Решить уравнение Рейнольдса.
@@ -406,7 +406,7 @@ def solve_reynolds(
     Args:
         config: конфигурация подшипника
         film_model: модель толщины плёнки
-        method: "direct" (рекомендуется), "sor", или "jacobi"
+        method: "sor" (рекомендуется), "jacobi", или "direct"
 
     Returns:
         ReynoldsResult
