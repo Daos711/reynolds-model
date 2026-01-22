@@ -19,6 +19,7 @@ from .forces import (
     compute_flow,
     compute_losses,
     compute_stage2,
+    get_shear_stress_components,
 )
 
 __version__ = "0.2.0"

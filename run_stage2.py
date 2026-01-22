@@ -23,6 +23,7 @@ from bearing_solver import (
     BearingConfig,
     solve_reynolds,
     compute_stage2,
+    get_shear_stress_components,
 )
 
 
@@ -81,7 +82,8 @@ def run_base_calculation():
     print(f"  Fx = {result.forces.Fx:.1f} Н")
     print(f"  Fy = {result.forces.Fy:.1f} Н")
     print(f"  W = {result.forces.W:.1f} Н ({result.forces.W/1000:.2f} кН)")
-    print(f"  Угол нагрузки α = {np.degrees(result.forces.attitude_angle):.1f}°")
+    print(f"  Угол вектора силы = {np.degrees(result.forces.force_angle):.1f}°")
+    print(f"  Attitude angle (от h_min) = {np.degrees(result.forces.attitude_angle):.1f}°")
 
     print(f"\n--- ЭТАП 2: Трение ---")
     print(f"  F_friction = {result.friction.F_friction:.2f} Н")
@@ -90,7 +92,9 @@ def run_base_calculation():
     print(f"  τ_mean = {result.friction.tau_mean/1e6:.3f} МПа")
 
     print(f"\n--- ЭТАП 2: Расход ---")
-    print(f"  Q_total = {result.flow.Q_total*1e6:.4f} л/мин ({result.flow.Q_total*1e9:.2f} мм³/с)")
+    Q_mm3s = result.flow.Q_total * 1e9  # мм³/с
+    Q_Lmin = Q_mm3s * 60 / 1e6          # л/мин
+    print(f"  Q_total = {Q_mm3s:.2f} мм³/с = {Q_Lmin:.2f} л/мин")
     print(f"  Q+ (Z=+1) = {result.flow.Q_plus*1e9:.2f} мм³/с")
     print(f"  Q- (Z=-1) = {result.flow.Q_minus*1e9:.2f} мм³/с")
 
@@ -99,11 +103,11 @@ def run_base_calculation():
 
     # Проверки
     print(f"\n--- ПРОВЕРКИ ---")
-    alpha_deg = np.degrees(result.forces.attitude_angle)
-    if 30 <= alpha_deg <= 60:
-        print(f"  [OK] Угол нагрузки {alpha_deg:.1f}° в диапазоне 30-60°")
+    att_angle_deg = np.degrees(result.forces.attitude_angle)
+    if 30 <= att_angle_deg <= 70:
+        print(f"  [OK] Attitude angle {att_angle_deg:.1f}° в диапазоне 30-70°")
     else:
-        print(f"  [!] Угол нагрузки {alpha_deg:.1f}° вне типичного диапазона 30-60°")
+        print(f"  [!] Attitude angle {att_angle_deg:.1f}° вне типичного диапазона 30-70°")
 
     if 0.001 <= result.friction.mu_friction <= 0.01:
         print(f"  [OK] μ_friction = {result.friction.mu_friction:.4f} в диапазоне 0.001-0.01")
@@ -120,7 +124,7 @@ def study_epsilon_effect(base_config: BearingConfig):
     epsilons = [0.5, 0.6, 0.7, 0.8, 0.9]
     results = []
 
-    print(f"\n{'ε':>5} {'W, кН':>8} {'α, °':>6} {'μ_fr':>10} {'h_min':>8} "
+    print(f"\n{'ε':>5} {'W, кН':>8} {'att°':>6} {'μ_fr':>10} {'h_min':>8} "
           f"{'Q, мм³/с':>10} {'P_loss, Вт':>10} {'p_max':>10}")
     print("-" * 85)
 
@@ -284,17 +288,22 @@ def create_plots(base_config, base_result, eps_results, c_results):
         fig1, ax1 = plt.subplots(figsize=(8, 8), subplot_kw={'projection': 'polar'})
 
         forces = base_result.forces
-        alpha = forces.attitude_angle
+        force_angle = forces.force_angle
+        att_angle = forces.attitude_angle
         W = forces.W / 1000  # кН
 
         # Стрелка вектора силы
-        ax1.annotate('', xy=(alpha, W), xytext=(0, 0),
+        ax1.annotate('', xy=(force_angle, W), xytext=(0, 0),
                      arrowprops=dict(arrowstyle='->', color='red', lw=2))
-        ax1.plot([0, alpha], [0, W], 'r-', lw=2)
-        ax1.scatter([alpha], [W], c='red', s=100, zorder=5)
+        ax1.plot([0, force_angle], [0, W], 'r-', lw=2)
+        ax1.scatter([force_angle], [W], c='red', s=100, zorder=5)
+
+        # Отметить линию h_min (φ = 180°)
+        ax1.axvline(np.pi, color='gray', linestyle='--', alpha=0.5, label='h_min')
 
         ax1.set_title(f'Вектор несущей способности\n'
-                      f'W = {W:.2f} кН, α = {np.degrees(alpha):.1f}°',
+                      f'W = {W:.2f} кН, угол = {np.degrees(force_angle):.1f}°\n'
+                      f'Attitude angle = {np.degrees(att_angle):.1f}°',
                       fontsize=12, pad=20)
         ax1.set_theta_zero_location('E')
         ax1.set_theta_direction(-1)
@@ -403,26 +412,39 @@ def create_plots(base_config, base_result, eps_results, c_results):
 
         # =====================================================================
         # График 4: Профиль касательного напряжения τ(φ) при Z≈0
+        #           с разделением на компоненты Куэтта и Пуазёйль
         # =====================================================================
-        fig4, ax4 = plt.subplots(figsize=(10, 5))
+        fig4, ax4 = plt.subplots(figsize=(10, 6))
 
-        tau = base_result.friction.tau
         phi = base_result.reynolds.phi
         Z = base_result.reynolds.Z
         j_mid = len(Z) // 2  # середина по Z
-
-        tau_profile = tau[:, j_mid] / 1e6  # МПа
         phi_deg = np.degrees(phi)
 
-        ax4.plot(phi_deg, tau_profile, 'b-', lw=2)
+        # Получаем компоненты касательного напряжения
+        tau_couette, tau_pressure, tau_total = get_shear_stress_components(
+            base_result.reynolds, base_config
+        )
+
+        # Профили при Z = 0
+        tau_C_profile = tau_couette[:, j_mid] / 1e6   # МПа
+        tau_P_profile = tau_pressure[:, j_mid] / 1e6  # МПа
+        tau_total_profile = tau_total[:, j_mid] / 1e6 # МПа
+
+        # График с тремя линиями
+        ax4.plot(phi_deg, tau_total_profile, 'b-', lw=2.5, label='τ (суммарное)')
+        ax4.plot(phi_deg, tau_C_profile, 'g--', lw=1.5, label='τ_C = μU/h (Куэтт)')
+        ax4.plot(phi_deg, tau_P_profile, 'r:', lw=1.5, label='τ_P = (h/2)·dp/dx (Пуазёйль)')
+
         ax4.axhline(0, color='k', lw=0.5)
-        ax4.axvline(180, color='r', linestyle='--', alpha=0.7, label='h_min (φ=180°)')
+        ax4.axvline(180, color='gray', linestyle='--', alpha=0.5, label='h_min (φ=180°)')
         ax4.set_xlabel('φ, град')
         ax4.set_ylabel('τ, МПа')
-        ax4.set_title(f'Профиль касательного напряжения (Z = {Z[j_mid]:.2f})')
+        ax4.set_title(f'Профиль касательного напряжения (Z = {Z[j_mid]:.2f})\n'
+                      f'Разделение на компоненты: Куэтт (вязкий) + Пуазёйль (градиент давления)')
         ax4.set_xlim(0, 360)
         ax4.grid(True, alpha=0.3)
-        ax4.legend()
+        ax4.legend(loc='upper right')
 
         plt.tight_layout()
         plt.savefig(RESULTS_DIR / 'shear_stress_profile.png', dpi=150, bbox_inches='tight')

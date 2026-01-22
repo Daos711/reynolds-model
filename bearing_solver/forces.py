@@ -31,7 +31,8 @@ class BearingForces:
     Fx: float              # радиальная сила, Н
     Fy: float              # тангенциальная сила, Н
     W: float               # результирующая несущая способность, Н
-    attitude_angle: float  # угол нагрузки, рад
+    force_angle: float     # угол вектора силы от φ=0, рад
+    attitude_angle: float  # attitude angle от линии центров (h_min), рад
 
     # Безразмерные силы
     Fx_dimless: float
@@ -169,6 +170,48 @@ def _compute_shear_stress(
 
 
 @njit(cache=True)
+def _compute_shear_stress_components(
+    P: np.ndarray,
+    H: np.ndarray,
+    phi: np.ndarray,
+    d_phi: float,
+    n_phi: int,
+    n_z: int,
+    mu: float,
+    U: float,
+    c: float,
+    R: float,
+    pressure_scale: float
+) -> tuple:
+    """
+    Вычислить компоненты касательного напряжения отдельно.
+
+    Returns:
+        tau_couette: вязкий член μU/h (Куэтта)
+        tau_pressure: член от градиента давления (h/2)·dp/dx (Пуазёйль)
+        tau_total: сумма
+    """
+    tau_couette = np.zeros((n_phi, n_z))
+    tau_pressure = np.zeros((n_phi, n_z))
+
+    for i in range(n_phi):
+        i_plus = (i + 1) % n_phi
+        i_minus = (i - 1 + n_phi) % n_phi
+
+        for j in range(n_z):
+            h = H[i, j] * c
+
+            dP_dphi = (P[i_plus, j] - P[i_minus, j]) / (2 * d_phi)
+            dp_dx = (pressure_scale / R) * dP_dphi
+
+            tau_couette[i, j] = mu * U / h
+            tau_pressure[i, j] = (h / 2) * dp_dx
+
+    tau_total = tau_couette + tau_pressure
+    return tau_couette, tau_pressure, tau_total
+
+
+@njit(cache=True)
 def _integrate_friction(
     tau: np.ndarray,
     d_phi: float,
@@ -287,13 +330,22 @@ def compute_forces(
     Fy = Fy_dimless * config.force_scale
     W = W_dimless * config.force_scale
 
-    # Угол нагрузки
-    attitude_angle = np.arctan2(Fy, Fx)
+    # Угол вектора силы от φ=0
+    force_angle = np.arctan2(Fy, Fx)
+
+    # Attitude angle: угол от линии центров (h_min при φ = φ₀ + π)
+    # attitude_angle = |force_angle - (phi0 + π)|
+    h_min_angle = config.phi0 + np.pi
+    attitude_angle = abs(force_angle - h_min_angle)
+    # Нормализуем к [0, π]
+    if attitude_angle > np.pi:
+        attitude_angle = 2 * np.pi - attitude_angle
 
     return BearingForces(
         Fx=Fx,
         Fy=Fy,
         W=W,
+        force_angle=force_angle,
         attitude_angle=attitude_angle,
         Fx_dimless=Fx_dimless,
         Fy_dimless=Fy_dimless,
@@ -355,6 +407,35 @@ def compute_friction(
         tau_mean=tau_mean,
         tau=tau if return_field else None
     )
+
+
+def get_shear_stress_components(
+    result: ReynoldsResult,
+    config: BearingConfig
+) -> tuple:
+    """
+    Получить компоненты касательного напряжения для диагностики.
+
+    Returns:
+        tau_couette: μU/h (вязкий член, Куэтта)
+        tau_pressure: (h/2)·dp/dx (от градиента давления, Пуазёйль)
+        tau_total: сумма
+    """
+    phi = result.phi
+    P = result.P
+    H = result.H
+    n_phi = len(phi)
+    n_z = len(result.Z)
+
+    d_phi = phi[1] - phi[0] if n_phi > 1 else 2*np.pi
+
+    tau_couette, tau_pressure, tau_total = _compute_shear_stress_components(
+        P, H, phi, d_phi, n_phi, n_z,
+        config.mu, config.U, config.c, config.R,
+        config.pressure_scale
+    )
+
+    return tau_couette, tau_pressure, tau_total
 
 
 def compute_flow(
