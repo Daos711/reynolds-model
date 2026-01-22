@@ -1,1 +1,31 @@
+# Python
 __pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg-info/
+.eggs/
+dist/
+build/
+
+# Результаты (локальные картинки и данные)
+results/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Виртуальные окружения
+venv/
+env/
+.env/
+
+# OS
+.DS_Store
+Thumbs.db
