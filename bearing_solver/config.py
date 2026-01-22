@@ -3,11 +3,12 @@
 
 Нормировка по ТЗ:
     - x = R·φ
-    - Z = 2z/L ∈ [-1, 1]
+    - Z = 2z/L ∈ [-1, 1], следовательно dz = (L/2)·dZ
     - H = h/c
     - U = ω·R, где ω = 2πn/60
     - Безразмерное давление: P = p·c² / (6μUR)
-    - Масштаб сил: F = (6μUR²L/c²) × F̄
+    - Масштаб сил: F = (3μUR²L/c²) × F̄
+      (коэффициент 3 = 6/2 из-за dz = (L/2)·dZ при интегрировании)
 """
 
 from dataclasses import dataclass, field
@@ -122,9 +123,13 @@ class BearingConfig:
         F = F̄ × force_scale
         где F̄ - безразмерная сила
 
-        По ТЗ: F = (6μUR²L/c²) × F̄
+        Вывод:
+            p = P × (6μUR/c²)
+            dA = R·dφ × dz = R·dφ × (L/2)·dZ  (т.к. Z = 2z/L)
+            F = ∫∫ p dA = (6μUR/c²) × R × (L/2) × ∫∫ P dφ dZ
+            F = (3μUR²L/c²) × F̄
         """
-        return 6 * self.mu * self.U * self.R**2 * self.L / (self.c ** 2)
+        return 3 * self.mu * self.U * self.R**2 * self.L / (self.c ** 2)
 
     def create_grid(self) -> tuple[np.ndarray, np.ndarray, float, float]:
         """

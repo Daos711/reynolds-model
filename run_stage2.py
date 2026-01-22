@@ -8,10 +8,16 @@
     3. W растёт с μ
     4. μ_friction ~ 0.001-0.01
     5. Угол нагрузки (attitude angle) ~ 30-60°
+
+Использование:
+    python run_stage2.py              # режим minimal (по умолчанию)
+    python run_stage2.py --plots all  # все графики
+    python run_stage2.py --plots none # только CSV и консоль
 """
 
 import sys
 import time
+import argparse
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
@@ -270,8 +276,20 @@ def study_viscosity_effect(base_config: BearingConfig):
     return results
 
 
-def create_plots(base_config, base_result, eps_results, c_results):
-    """Создать графики."""
+def create_plots(base_config, base_result, eps_results, c_results, plots_mode='minimal'):
+    """
+    Создать графики.
+
+    Args:
+        plots_mode: 'minimal' - summary + force_vector + epsilon_study
+                    'all' - все графики (для диагностики)
+                    'none' - пропустить создание графиков
+    """
+    if plots_mode == 'none':
+        print_header("5. СОЗДАНИЕ ГРАФИКОВ")
+        print("  Пропущено (режим --plots none)")
+        return
+
     print_header("5. СОЗДАНИЕ ГРАФИКОВ")
 
     try:
@@ -283,7 +301,7 @@ def create_plots(base_config, base_result, eps_results, c_results):
         plt.rcParams['font.family'] = 'DejaVu Sans'
 
         # =====================================================================
-        # График 1: Полярная диаграмма вектора силы
+        # График 1: Полярная диаграмма вектора силы (minimal + all)
         # =====================================================================
         fig1, ax1 = plt.subplots(figsize=(8, 8), subplot_kw={'projection': 'polar'})
 
@@ -313,7 +331,7 @@ def create_plots(base_config, base_result, eps_results, c_results):
         plt.close()
 
         # =====================================================================
-        # График 2: Зависимости от ε
+        # График 2: Зависимости от ε (minimal + all)
         # =====================================================================
         fig2, axes2 = plt.subplots(2, 3, figsize=(15, 10))
 
@@ -369,90 +387,87 @@ def create_plots(base_config, base_result, eps_results, c_results):
         plt.close()
 
         # =====================================================================
-        # График 3: Зависимости от c
+        # График 3: Зависимости от c (только all)
         # =====================================================================
-        fig3, axes3 = plt.subplots(2, 2, figsize=(12, 10))
+        if plots_mode == 'all':
+            fig3, axes3 = plt.subplots(2, 2, figsize=(12, 10))
 
-        c_vals = [r['c_um'] for r in c_results]
-        W_c = [r['W_kN'] for r in c_results]
-        mu_fr_c = [r['mu_friction'] for r in c_results]
-        Q_c = [r['Q_mm3s'] for r in c_results]
-        P_loss_c = [r['P_loss_W'] for r in c_results]
+            c_vals = [r['c_um'] for r in c_results]
+            W_c = [r['W_kN'] for r in c_results]
+            mu_fr_c = [r['mu_friction'] for r in c_results]
+            Q_c = [r['Q_mm3s'] for r in c_results]
+            P_loss_c = [r['P_loss_W'] for r in c_results]
 
-        axes3[0, 0].plot(c_vals, W_c, 'bo-', lw=2, markersize=8)
-        axes3[0, 0].set_xlabel('c, мкм')
-        axes3[0, 0].set_ylabel('W, кН')
-        axes3[0, 0].set_title('Несущая способность')
-        axes3[0, 0].grid(True, alpha=0.3)
+            axes3[0, 0].plot(c_vals, W_c, 'bo-', lw=2, markersize=8)
+            axes3[0, 0].set_xlabel('c, мкм')
+            axes3[0, 0].set_ylabel('W, кН')
+            axes3[0, 0].set_title('Несущая способность')
+            axes3[0, 0].grid(True, alpha=0.3)
 
-        axes3[0, 1].plot(c_vals, mu_fr_c, 'ro-', lw=2, markersize=8)
-        axes3[0, 1].set_xlabel('c, мкм')
-        axes3[0, 1].set_ylabel('μ_fr')
-        axes3[0, 1].set_title('Коэффициент трения')
-        axes3[0, 1].grid(True, alpha=0.3)
-        axes3[0, 1].ticklabel_format(style='scientific', axis='y', scilimits=(0,0))
+            axes3[0, 1].plot(c_vals, mu_fr_c, 'ro-', lw=2, markersize=8)
+            axes3[0, 1].set_xlabel('c, мкм')
+            axes3[0, 1].set_ylabel('μ_fr')
+            axes3[0, 1].set_title('Коэффициент трения')
+            axes3[0, 1].grid(True, alpha=0.3)
+            axes3[0, 1].ticklabel_format(style='scientific', axis='y', scilimits=(0,0))
 
-        axes3[1, 0].plot(c_vals, Q_c, 'mo-', lw=2, markersize=8)
-        axes3[1, 0].set_xlabel('c, мкм')
-        axes3[1, 0].set_ylabel('Q, мм³/с')
-        axes3[1, 0].set_title('Расход смазки')
-        axes3[1, 0].grid(True, alpha=0.3)
+            axes3[1, 0].plot(c_vals, Q_c, 'mo-', lw=2, markersize=8)
+            axes3[1, 0].set_xlabel('c, мкм')
+            axes3[1, 0].set_ylabel('Q, мм³/с')
+            axes3[1, 0].set_title('Расход смазки')
+            axes3[1, 0].grid(True, alpha=0.3)
 
-        axes3[1, 1].plot(c_vals, P_loss_c, 'co-', lw=2, markersize=8)
-        axes3[1, 1].set_xlabel('c, мкм')
-        axes3[1, 1].set_ylabel('P_loss, Вт')
-        axes3[1, 1].set_title('Потери мощности')
-        axes3[1, 1].grid(True, alpha=0.3)
+            axes3[1, 1].plot(c_vals, P_loss_c, 'co-', lw=2, markersize=8)
+            axes3[1, 1].set_xlabel('c, мкм')
+            axes3[1, 1].set_ylabel('P_loss, Вт')
+            axes3[1, 1].set_title('Потери мощности')
+            axes3[1, 1].grid(True, alpha=0.3)
 
-        fig3.suptitle('Влияние зазора c (ε = 0.7)', fontsize=14, y=1.02)
-        plt.tight_layout()
-        plt.savefig(RESULTS_DIR / 'clearance_study.png', dpi=150, bbox_inches='tight')
-        print(f"  Сохранено: clearance_study.png")
-        plt.close()
+            fig3.suptitle('Влияние зазора c (ε = 0.7)', fontsize=14, y=1.02)
+            plt.tight_layout()
+            plt.savefig(RESULTS_DIR / 'clearance_study.png', dpi=150, bbox_inches='tight')
+            print(f"  Сохранено: clearance_study.png")
+            plt.close()
 
-        # =====================================================================
-        # График 4: Профиль касательного напряжения τ(φ) при Z≈0
-        #           с разделением на компоненты Куэтта и Пуазёйль
-        # =====================================================================
-        fig4, ax4 = plt.subplots(figsize=(10, 6))
+            # =================================================================
+            # График 4: Профиль τ(φ) с компонентами (только all)
+            # =================================================================
+            fig4, ax4 = plt.subplots(figsize=(10, 6))
 
-        phi = base_result.reynolds.phi
-        Z = base_result.reynolds.Z
-        j_mid = len(Z) // 2  # середина по Z
-        phi_deg = np.degrees(phi)
+            phi = base_result.reynolds.phi
+            Z = base_result.reynolds.Z
+            j_mid = len(Z) // 2
+            phi_deg = np.degrees(phi)
 
-        # Получаем компоненты касательного напряжения
-        tau_couette, tau_pressure, tau_total = get_shear_stress_components(
-            base_result.reynolds, base_config
-        )
+            tau_couette, tau_pressure, tau_total = get_shear_stress_components(
+                base_result.reynolds, base_config
+            )
 
-        # Профили при Z = 0
-        tau_C_profile = tau_couette[:, j_mid] / 1e6   # МПа
-        tau_P_profile = tau_pressure[:, j_mid] / 1e6  # МПа
-        tau_total_profile = tau_total[:, j_mid] / 1e6 # МПа
+            tau_C_profile = tau_couette[:, j_mid] / 1e6
+            tau_P_profile = tau_pressure[:, j_mid] / 1e6
+            tau_total_profile = tau_total[:, j_mid] / 1e6
 
-        # График с тремя линиями
-        ax4.plot(phi_deg, tau_total_profile, 'b-', lw=2.5, label='τ (суммарное)')
-        ax4.plot(phi_deg, tau_C_profile, 'g--', lw=1.5, label='τ_C = μU/h (Куэтт)')
-        ax4.plot(phi_deg, tau_P_profile, 'r:', lw=1.5, label='τ_P = (h/2)·dp/dx (Пуазёйль)')
+            ax4.plot(phi_deg, tau_total_profile, 'b-', lw=2.5, label='τ (суммарное)')
+            ax4.plot(phi_deg, tau_C_profile, 'g--', lw=1.5, label='τ_C = μU/h (Куэтт)')
+            ax4.plot(phi_deg, tau_P_profile, 'r:', lw=1.5, label='τ_P = (h/2)·dp/dx (Пуазёйль)')
 
-        ax4.axhline(0, color='k', lw=0.5)
-        ax4.axvline(180, color='gray', linestyle='--', alpha=0.5, label='h_min (φ=180°)')
-        ax4.set_xlabel('φ, град')
-        ax4.set_ylabel('τ, МПа')
-        ax4.set_title(f'Профиль касательного напряжения (Z = {Z[j_mid]:.2f})\n'
-                      f'Разделение на компоненты: Куэтт (вязкий) + Пуазёйль (градиент давления)')
-        ax4.set_xlim(0, 360)
-        ax4.grid(True, alpha=0.3)
-        ax4.legend(loc='upper right')
+            ax4.axhline(0, color='k', lw=0.5)
+            ax4.axvline(180, color='gray', linestyle='--', alpha=0.5, label='h_min (φ=180°)')
+            ax4.set_xlabel('φ, град')
+            ax4.set_ylabel('τ, МПа')
+            ax4.set_title(f'Профиль касательного напряжения (Z = {Z[j_mid]:.2f})\n'
+                          f'Разделение на компоненты: Куэтт (вязкий) + Пуазёйль (градиент давления)')
+            ax4.set_xlim(0, 360)
+            ax4.grid(True, alpha=0.3)
+            ax4.legend(loc='upper right')
 
-        plt.tight_layout()
-        plt.savefig(RESULTS_DIR / 'shear_stress_profile.png', dpi=150, bbox_inches='tight')
-        print(f"  Сохранено: shear_stress_profile.png")
-        plt.close()
+            plt.tight_layout()
+            plt.savefig(RESULTS_DIR / 'shear_stress_profile.png', dpi=150, bbox_inches='tight')
+            print(f"  Сохранено: shear_stress_profile.png")
+            plt.close()
 
         # =====================================================================
-        # График 5: Сводная таблица результатов
+        # График 5: Сводная таблица результатов (minimal + all)
         # =====================================================================
         fig5, ax5 = plt.subplots(figsize=(10, 8))
         ax5.axis('off')
@@ -500,6 +515,17 @@ def create_plots(base_config, base_result, eps_results, c_results):
 
 
 def main():
+    # Разбор аргументов командной строки
+    parser = argparse.ArgumentParser(
+        description='Этап 2: Расчёт сил, трения и расхода смазки'
+    )
+    parser.add_argument(
+        '--plots', choices=['minimal', 'all', 'none'],
+        default='minimal',
+        help='Режим графиков: minimal (по умолчанию), all, none'
+    )
+    args = parser.parse_args()
+
     print_header("ЭТАП 2: РАСЧЁТ СИЛ, ТРЕНИЯ И РАСХОДА СМАЗКИ")
 
     # 1. Базовый расчёт
@@ -515,7 +541,7 @@ def main():
     mu_results = study_viscosity_effect(base_config)
 
     # 5. Графики
-    create_plots(base_config, base_result, eps_results, c_results)
+    create_plots(base_config, base_result, eps_results, c_results, args.plots)
 
     # Итоги
     print_header("ИТОГИ ЭТАПА 2")
