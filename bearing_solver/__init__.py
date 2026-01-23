@@ -27,8 +27,15 @@ from .equilibrium import (
     find_equilibrium,
     find_equilibrium_1d,
 )
+from .dynamics import (
+    DynamicCoefficients,
+    compute_dynamic_coefficients,
+    compute_stiffness,
+    compute_damping,
+    check_delta_sensitivity,
+)
 
-__version__ = "0.3.0"
+__version__ = "0.4.0"
 
 __all__ = [
     # Конфигурация
@@ -58,4 +65,10 @@ __all__ = [
     "EquilibriumResult",
     "find_equilibrium",
     "find_equilibrium_1d",
+    # Этап 4: Динамика
+    "DynamicCoefficients",
+    "compute_dynamic_coefficients",
+    "compute_stiffness",
+    "compute_damping",
+    "check_delta_sensitivity",
 ]

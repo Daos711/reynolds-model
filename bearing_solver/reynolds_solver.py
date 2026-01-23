@@ -2,12 +2,17 @@
 Решатель уравнения Рейнольдса для гидродинамического подшипника.
 
 Безразмерное уравнение:
-    ∂/∂φ(H³ ∂P/∂φ) + (D/L)² ∂/∂Z(H³ ∂P/∂Z) = ∂H/∂φ
+    ∂/∂φ(H³ ∂P/∂φ) + (D/L)² ∂/∂Z(H³ ∂P/∂Z) = ∂H/∂φ + 2·∂H/∂t*
 
 Граничные условия:
     - По φ: периодичность P(φ=0) = P(φ=2π)
     - По Z: P(Z=±1) = 0 (атмосферное давление на торцах)
     - Кавитация: P ≥ 0
+
+Squeeze-член (∂H/∂t*):
+    Для расчёта демпфирования используется:
+    ∂H/∂t* = vx*·cos(φ) + vy*·sin(φ)
+    где vx* = (R/Uc)·ẋ, vy* = (R/Uc)·ẏ
 
 Ускорение через Numba JIT для параметрических исследований.
 """
@@ -86,7 +91,7 @@ def _precompute_H3_halves(H3: np.ndarray, n_phi: int, n_z: int):
 @njit(cache=True)
 def _sor_iteration(
     P: np.ndarray,
-    dH_dphi: np.ndarray,
+    rhs: np.ndarray,
     H3_phi_plus: np.ndarray,
     H3_phi_minus: np.ndarray,
     H3_z_plus: np.ndarray,
@@ -99,6 +104,9 @@ def _sor_iteration(
 ) -> float:
     """
     Одна итерация SOR.
+
+    Args:
+        rhs: правая часть уравнения (∂H/∂φ + 2·∂H/∂t*)
 
     Возвращает максимальное изменение (для проверки сходимости).
     """
@@ -127,7 +135,7 @@ def _sor_iteration(
                      c_j_minus * P[i, j - 1])
 
             # Новое значение
-            P_new = (P_sum - dH_dphi[i, j]) / c_center
+            P_new = (P_sum - rhs[i, j]) / c_center
 
             # SOR с релаксацией
             P_new = P[i, j] + omega * (P_new - P[i, j])
@@ -149,7 +157,7 @@ def _sor_iteration(
 def _compute_residual(
     P: np.ndarray,
     H3: np.ndarray,
-    dH_dphi: np.ndarray,
+    rhs: np.ndarray,
     a_phi: float,
     a_z: float,
     n_phi: int,
@@ -157,6 +165,9 @@ def _compute_residual(
 ) -> float:
     """
     Вычислить среднюю невязку PDE только для активной зоны (P > 0).
+
+    Args:
+        rhs: правая часть уравнения (∂H/∂φ + 2·∂H/∂t*)
     """
     sum_residual = 0.0
     count_active = 0
@@ -183,7 +194,7 @@ def _compute_residual(
                    a_z * (H3_jp * (P[i, j + 1] - P[i, j]) -
                           H3_jm * (P[i, j] - P[i, j - 1])))
 
-            res = abs(lhs - dH_dphi[i, j])
+            res = abs(lhs - rhs[i, j])
             sum_residual += res
 
     if count_active > 0:
@@ -194,7 +205,7 @@ def _compute_residual(
 @njit(cache=True)
 def _solve_sor_numba(
     H: np.ndarray,
-    dH_dphi: np.ndarray,
+    rhs: np.ndarray,
     d_phi: float,
     d_Z: float,
     D_L_sq: float,
@@ -207,6 +218,9 @@ def _solve_sor_numba(
 ) -> tuple:
     """
     Решение методом SOR с Numba.
+
+    Args:
+        rhs: правая часть уравнения (∂H/∂φ + 2·∂H/∂t*)
 
     Returns:
         P: поле давления
@@ -229,7 +243,7 @@ def _solve_sor_numba(
 
     for iteration in range(max_iter):
         max_change = _sor_iteration(
-            P, dH_dphi,
+            P, rhs,
             H3_phi_plus, H3_phi_minus,
             H3_z_plus, H3_z_minus,
             a_phi, a_z, omega,
@@ -244,7 +258,7 @@ def _solve_sor_numba(
             break
 
     # Вычисляем невязку PDE
-    residual = _compute_residual(P, H3, dH_dphi, a_phi, a_z, n_phi, n_z)
+    residual = _compute_residual(P, H3, rhs, a_phi, a_z, n_phi, n_z)
 
     return P, converged, iterations, residual
 
@@ -281,9 +295,15 @@ class ReynoldsSolver:
         self.min_iter = 100       # минимум итераций
         self.tol = 1e-8           # допуск сходимости
 
-    def solve(self) -> ReynoldsResult:
+    def solve(self, dH_dt_star: Optional[np.ndarray] = None) -> ReynoldsResult:
         """
         Решить уравнение Рейнольдса.
+
+        Args:
+            dH_dt_star: безразмерная скорость изменения толщины плёнки
+                        (squeeze-член для расчёта демпфирования).
+                        Если задано, RHS = ∂H/∂φ + 2·∂H/∂t*
+                        Формула: dH_dt_star = vx*·cos(φ) + vy*·sin(φ)
 
         Returns:
             ReynoldsResult с полями давления и толщины плёнки
@@ -297,12 +317,17 @@ class ReynoldsSolver:
         H = self.film_model.H(phi, Z)
         dH_dphi = self.film_model.dH_dphi(phi, Z)
 
+        # Правая часть уравнения Рейнольдса
+        rhs = dH_dphi.copy()
+        if dH_dt_star is not None:
+            rhs = rhs + 2.0 * dH_dt_star
+
         # Параметр (D/L)²
         D_L_sq = self.config.D_L_ratio ** 2
 
         # Решаем SOR с Numba
         P, converged, iterations, residual = _solve_sor_numba(
-            H, dH_dphi, d_phi, d_Z, D_L_sq,
+            H, rhs, d_phi, d_Z, D_L_sq,
             n_phi, n_z,
             self.omega_sor, self.max_iter, self.min_iter, self.tol
         )
@@ -334,6 +359,7 @@ class ReynoldsSolver:
 def solve_reynolds(
     config: BearingConfig,
     film_model: Optional[FilmModel] = None,
+    dH_dt_star: Optional[np.ndarray] = None,
 ) -> ReynoldsResult:
     """
     Удобная функция для решения уравнения Рейнольдса.
@@ -341,9 +367,11 @@ def solve_reynolds(
     Args:
         config: конфигурация подшипника
         film_model: модель толщины плёнки
+        dH_dt_star: безразмерная скорость изменения толщины плёнки
+                    (squeeze-член для расчёта демпфирования)
 
     Returns:
         ReynoldsResult
     """
     solver = ReynoldsSolver(config, film_model)
-    return solver.solve()
+    return solver.solve(dH_dt_star=dH_dt_star)
