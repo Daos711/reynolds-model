@@ -46,6 +46,8 @@ from .texture import (
     TexturedFilmModel,
     generate_regular_centers,
     generate_phyllotaxis_centers,
+    generate_spiral_centers,
+    validate_texture,
 )
 from .roughness import (
     RoughnessParams,
@@ -104,6 +106,8 @@ __all__ = [
     "TexturedFilmModel",
     "generate_regular_centers",
     "generate_phyllotaxis_centers",
+    "generate_spiral_centers",
+    "validate_texture",
     # Этап 7: Шероховатость
     "RoughnessParams",
     "RoughnessResult",

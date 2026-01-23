@@ -1,27 +1,28 @@
 """
-Этап 6: Микрорельеф по ГОСТ 24773-81.
+Этап 6-8: Микрорельеф по ГОСТ 24773-81.
 
 Текстурированная поверхность подшипника с эллипсоидальными лунками.
 
 Безразмерная геометрия:
     H(φ, Z) = 1 + ex·cos(φ) + ey·sin(φ) + ΔH*(φ, Z)
 
-    где ΔH* = Δh/c — безразмерная глубина текстуры
+    где ΔH* = h_star = h_depth/c — безразмерная глубина текстуры
 
 Форма ячейки — эллипсоидальная лунка:
     r² = (Δφ·R/b)² + (Δz/a)²
-    if r² <= 1: ΔH* = h_depth* × sqrt(1 - r²)
+    if r² <= 1: ΔH* = h_star × sqrt(1 - r²)
 
 Генерация центров:
-    - Regular grid: равномерная сетка с шагами Ss, Sz
+    - Regular (linear): равномерная сетка с шагами Ss, Sz
     - Phyllotaxis: золотой угол α ≈ 137.5°
+    - Spiral: многозаходная спираль
 
 Связь Fn ↔ геометрия:
     N = (2πRL / (πab)) × Fn = (2RL/ab) × Fn
 """
 
-from dataclasses import dataclass
-from typing import Optional, Tuple, List, Literal
+from dataclasses import dataclass, field
+from typing import Optional, Tuple, List, Literal, Union
 import numpy as np
 from numba import njit
 
@@ -36,22 +37,73 @@ class TextureParams:
     # Размеры эллипсоидальной лунки (в метрах)
     a: float = 0.5e-3       # полуось по Z, м
     b: float = 0.5e-3       # полуось по φ (дуга), м
-    h_depth: float = 5e-6   # глубина лунки, м
 
-    # Плотность заполнения
+    # Глубина лунки — ОДИН из двух способов задания:
+    # Способ 1: размерная глубина (м)
+    h_depth: Optional[float] = None
+    # Способ 2: безразмерная глубина h_star = h_depth/c (предпочтительно!)
+    h_star: Optional[float] = None
+
+    # Плотность заполнения (от ВСЕЙ площади подшипника)
     Fn: float = 0.15        # доля площади, занятая лунками (0-1)
 
     # Метод генерации центров
-    pattern: Literal['regular', 'phyllotaxis'] = 'phyllotaxis'
+    pattern: Literal['regular', 'phyllotaxis', 'spiral'] = 'phyllotaxis'
 
     # Для regular grid
     theta: float = 0.0      # угол поворота сетки, рад
 
+    # Для spiral
+    n_starts: int = 1       # число заходов спирали (T)
+    spiral_angle: Optional[float] = None  # угол между точками (None = золотой)
+
+    # Сектор текстуры (опционально)
+    phi_min: float = 0.0    # начальный угол сектора, рад
+    phi_max: float = 2 * np.pi  # конечный угол сектора, рад
+
     def __post_init__(self):
         if not 0 <= self.Fn <= 1:
             raise ValueError(f"Fn must be in [0, 1], got {self.Fn}")
-        if self.h_depth < 0:
-            raise ValueError(f"h_depth must be >= 0, got {self.h_depth}")
+
+        # Проверка задания глубины
+        if self.h_depth is None and self.h_star is None:
+            # По умолчанию h_star = 0.1
+            self.h_star = 0.1
+        if self.h_depth is not None and self.h_star is not None:
+            raise ValueError("Specify either h_depth or h_star, not both")
+
+        # Нормализация сектора
+        self.phi_min = self.phi_min % (2 * np.pi)
+        self.phi_max = self.phi_max % (2 * np.pi)
+        if self.phi_max == 0:
+            self.phi_max = 2 * np.pi
+
+    def get_h_depth(self, c: float) -> float:
+        """Получить размерную глубину h_depth для заданного зазора c."""
+        if self.h_depth is not None:
+            return self.h_depth
+        return self.h_star * c
+
+    def get_h_star(self, c: float) -> float:
+        """Получить безразмерную глубину h_star для заданного зазора c."""
+        if self.h_star is not None:
+            return self.h_star
+        return self.h_depth / c
+
+    @property
+    def is_full_circumference(self) -> bool:
+        """Текстура на всей окружности?"""
+        return abs(self.phi_max - self.phi_min - 2*np.pi) < 0.01 or \
+               (self.phi_min == 0 and self.phi_max >= 2*np.pi - 0.01)
+
+    def get_sector_fraction(self) -> float:
+        """Доля окружности, занятая сектором."""
+        if self.is_full_circumference:
+            return 1.0
+        if self.phi_max > self.phi_min:
+            return (self.phi_max - self.phi_min) / (2 * np.pi)
+        else:
+            return (2*np.pi - self.phi_min + self.phi_max) / (2 * np.pi)
 
 
 @njit(cache=True)
@@ -191,7 +243,9 @@ def generate_phyllotaxis_centers(
     L: float,
     a: float,
     b: float,
-    Fn: float
+    Fn: float,
+    phi_min: float = 0.0,
+    phi_max: float = 2 * np.pi
 ) -> Tuple[np.ndarray, np.ndarray]:
     """
     Генерация центров лунок по филлотаксису (золотой угол).
@@ -203,7 +257,8 @@ def generate_phyllotaxis_centers(
         R: радиус, м
         L: длина, м
         a, b: полуоси лунки, м
-        Fn: плотность заполнения
+        Fn: плотность заполнения (от ВСЕЙ поверхности)
+        phi_min, phi_max: границы сектора (рад)
 
     Returns:
         (centers_phi, centers_z)
@@ -214,7 +269,7 @@ def generate_phyllotaxis_centers(
     # Площадь поверхности цилиндра
     S_total = 2 * np.pi * R * L
 
-    # Число лунок
+    # Число лунок (от всей поверхности!)
     N = int(S_total * Fn / S_cell)
     if N < 1:
         N = 1
@@ -222,14 +277,192 @@ def generate_phyllotaxis_centers(
     # Золотой угол в радианах
     golden_angle = np.pi * (3 - np.sqrt(5))  # ≈ 137.508°
 
-    centers_phi = np.zeros(N)
-    centers_z = np.zeros(N)
+    # Проверяем, нужен ли сектор
+    is_full = abs(phi_max - phi_min - 2*np.pi) < 0.01 or \
+              (phi_min == 0 and phi_max >= 2*np.pi - 0.01)
 
-    for k in range(N):
-        centers_phi[k] = (k * golden_angle) % (2 * np.pi)
-        centers_z[k] = L * (k + 0.5) / N - L/2
+    if is_full:
+        # Полная окружность
+        centers_phi = np.zeros(N)
+        centers_z = np.zeros(N)
+
+        for k in range(N):
+            centers_phi[k] = (k * golden_angle) % (2 * np.pi)
+            centers_z[k] = L * (k + 0.5) / N - L/2
+    else:
+        # Сектор — генерируем больше точек и фильтруем
+        sector_frac = (phi_max - phi_min) / (2 * np.pi) if phi_max > phi_min \
+                      else (2*np.pi - phi_min + phi_max) / (2 * np.pi)
+
+        # Нужно примерно N * sector_frac точек в секторе
+        N_target = max(1, int(N * sector_frac))
+
+        centers_phi = []
+        centers_z = []
+        k = 0
+        max_attempts = N * 10  # защита от бесконечного цикла
+
+        while len(centers_phi) < N_target and k < max_attempts:
+            phi_k = (k * golden_angle) % (2 * np.pi)
+            z_k = L * (k + 0.5) / max(N, N_target) - L/2
+
+            # Проверяем попадание в сектор
+            in_sector = (phi_min <= phi_k <= phi_max) if phi_max > phi_min \
+                        else (phi_k >= phi_min or phi_k <= phi_max)
+
+            if in_sector and -L/2 + a <= z_k <= L/2 - a:
+                centers_phi.append(phi_k)
+                centers_z.append(z_k)
+
+            k += 1
+
+        centers_phi = np.array(centers_phi)
+        centers_z = np.array(centers_z)
 
     return centers_phi, centers_z
+
+
+def generate_spiral_centers(
+    R: float,
+    L: float,
+    a: float,
+    b: float,
+    Fn: float,
+    n_starts: int = 1,
+    spiral_angle: Optional[float] = None,
+    phi_min: float = 0.0,
+    phi_max: float = 2 * np.pi
+) -> Tuple[np.ndarray, np.ndarray]:
+    """
+    Генерация центров лунок по многозаходной спирали.
+
+    Args:
+        R: радиус, м
+        L: длина, м
+        a, b: полуоси лунки, м
+        Fn: плотность заполнения
+        n_starts: число заходов спирали (T)
+        spiral_angle: угол между точками (None = золотой угол)
+        phi_min, phi_max: границы сектора
+
+    Returns:
+        (centers_phi, centers_z)
+    """
+    # Площадь одной лунки
+    S_cell = np.pi * a * b
+
+    # Площадь поверхности
+    S_total = 2 * np.pi * R * L
+
+    # Число лунок
+    N_total = int(S_total * Fn / S_cell)
+    if N_total < 1:
+        N_total = 1
+
+    # Угол между точками
+    if spiral_angle is None:
+        alpha = np.pi * (3 - np.sqrt(5))  # золотой угол
+    else:
+        alpha = spiral_angle
+
+    # Шаг по оси
+    c_axial = L / max(1, N_total // n_starts)
+
+    centers_phi = []
+    centers_z = []
+
+    # Проверяем сектор
+    is_full = abs(phi_max - phi_min - 2*np.pi) < 0.01 or \
+              (phi_min == 0 and phi_max >= 2*np.pi - 0.01)
+
+    for t in range(n_starts):
+        phi_0 = 2 * np.pi * t / n_starts  # начальный угол захода
+
+        n_points = N_total // n_starts
+        for n in range(n_points):
+            phi_n = (phi_0 + n * alpha) % (2 * np.pi)
+            z_n = -L/2 + a + n * c_axial
+
+            if z_n > L/2 - a:
+                break
+
+            # Проверка сектора
+            in_sector = is_full or \
+                        ((phi_min <= phi_n <= phi_max) if phi_max > phi_min
+                         else (phi_n >= phi_min or phi_n <= phi_max))
+
+            if in_sector:
+                centers_phi.append(phi_n)
+                centers_z.append(z_n)
+
+    return np.array(centers_phi), np.array(centers_z)
+
+
+def validate_texture(
+    centers_phi: np.ndarray,
+    centers_z: np.ndarray,
+    a: float,
+    b: float,
+    R: float,
+    L: float,
+    phi_min: float = 0.0,
+    phi_max: float = 2 * np.pi
+) -> Tuple[bool, str]:
+    """
+    Проверка валидности текстуры.
+
+    Args:
+        centers_phi: углы центров лунок, рад
+        centers_z: z-координаты центров, м
+        a, b: полуоси эллипса, м
+        R: радиус подшипника, м
+        L: длина подшипника, м
+        phi_min, phi_max: границы сектора
+
+    Returns:
+        (valid, message)
+    """
+    n = len(centers_phi)
+
+    if n == 0:
+        return True, "No dimples"
+
+    # 1. Проверка границ (торцы)
+    for i in range(n):
+        z = centers_z[i]
+        if z < -L/2 + a or z > L/2 - a:
+            return False, f"Лунка {i} выходит за торец: z={z*1000:.2f} мм"
+
+    # 2. Проверка сектора
+    is_full = abs(phi_max - phi_min - 2*np.pi) < 0.01 or \
+              (phi_min == 0 and phi_max >= 2*np.pi - 0.01)
+
+    if not is_full:
+        for i in range(n):
+            phi = centers_phi[i] % (2 * np.pi)
+            in_sector = (phi_min <= phi <= phi_max) if phi_max > phi_min \
+                        else (phi >= phi_min or phi <= phi_max)
+            if not in_sector:
+                return False, f"Лунка {i} вне сектора: φ={np.degrees(phi):.1f}°"
+
+    # 3. Проверка неперекрытия эллипсов
+    for i in range(n):
+        phi_i, z_i = centers_phi[i], centers_z[i]
+        for j in range(i + 1, n):
+            phi_j, z_j = centers_phi[j], centers_z[j]
+
+            # Расстояние по окружности с периодичностью
+            dphi = abs(phi_i - phi_j)
+            dphi = min(dphi, 2 * np.pi - dphi)
+            dx = R * dphi
+            dz = abs(z_i - z_j)
+
+            # Критерий перекрытия эллипсов: (dx/(2b))² + (dz/(2a))² >= 1
+            overlap_param = (dx / (2 * b))**2 + (dz / (2 * a))**2
+            if overlap_param < 1.0:
+                return False, f"Перекрытие лунок {i} и {j}: param={overlap_param:.3f}"
+
+    return True, "OK"
 
 
 class TexturedFilmModel(FilmModel):
@@ -257,8 +490,8 @@ class TexturedFilmModel(FilmModel):
         # Базовая гладкая модель
         self._smooth_model = SmoothFilmModel(config)
 
-        # Безразмерная глубина
-        self.h_depth_star = self.params.h_depth / config.c
+        # Безразмерная глубина (используем h_star или вычисляем из h_depth)
+        self.h_depth_star = self.params.get_h_star(config.c)
 
         # Генерируем центры лунок
         if self.params.pattern == 'regular':
@@ -267,19 +500,49 @@ class TexturedFilmModel(FilmModel):
                 a=self.params.a, b=self.params.b,
                 Fn=self.params.Fn, theta=self.params.theta
             )
+        elif self.params.pattern == 'spiral':
+            self.centers_phi, self.centers_z = generate_spiral_centers(
+                R=config.R, L=config.L,
+                a=self.params.a, b=self.params.b,
+                Fn=self.params.Fn,
+                n_starts=self.params.n_starts,
+                spiral_angle=self.params.spiral_angle,
+                phi_min=self.params.phi_min,
+                phi_max=self.params.phi_max
+            )
         else:  # phyllotaxis
             self.centers_phi, self.centers_z = generate_phyllotaxis_centers(
                 R=config.R, L=config.L,
                 a=self.params.a, b=self.params.b,
-                Fn=self.params.Fn
+                Fn=self.params.Fn,
+                phi_min=self.params.phi_min,
+                phi_max=self.params.phi_max
             )
 
         self.N_cells = len(self.centers_phi)
+
+        # Валидация текстуры
+        self._is_valid, self._validation_msg = validate_texture(
+            self.centers_phi, self.centers_z,
+            self.params.a, self.params.b,
+            config.R, config.L,
+            self.params.phi_min, self.params.phi_max
+        )
 
         # Кешированное поле текстуры (вычисляется при первом вызове)
         self._texture_field: Optional[np.ndarray] = None
         self._cached_phi: Optional[np.ndarray] = None
         self._cached_Z: Optional[np.ndarray] = None
+
+    @property
+    def is_valid(self) -> bool:
+        """Валидна ли текстура (нет перекрытий, в границах)."""
+        return self._is_valid
+
+    @property
+    def validation_message(self) -> str:
+        """Сообщение о валидации."""
+        return self._validation_msg
 
     def _compute_texture_field(self, phi: np.ndarray, Z: np.ndarray) -> np.ndarray:
         """Вычислить и закешировать поле текстуры."""
@@ -342,15 +605,21 @@ class TexturedFilmModel(FilmModel):
 
     def get_texture_stats(self) -> dict:
         """Получить статистику текстуры."""
+        h_depth_m = self.params.get_h_depth(self.config.c)
         return {
             'N_cells': self.N_cells,
             'a_mm': self.params.a * 1000,
             'b_mm': self.params.b * 1000,
-            'h_depth_um': self.params.h_depth * 1e6,
-            'h_depth_star': self.h_depth_star,
+            'h_depth_um': h_depth_m * 1e6,
+            'h_star': self.h_depth_star,
             'Fn': self.params.Fn,
             'pattern': self.params.pattern,
             'Fn_actual': self._compute_actual_Fn(),
+            'is_valid': self._is_valid,
+            'validation_msg': self._validation_msg,
+            'phi_min_deg': np.degrees(self.params.phi_min),
+            'phi_max_deg': np.degrees(self.params.phi_max),
+            'is_full_circumference': self.params.is_full_circumference,
         }
 
     def _compute_actual_Fn(self) -> float:
