@@ -1,35 +1,16 @@
-# Results - all generated files
-results/
-result_stage1.png
-
 # Python
 __pycache__/
 *.py[cod]
 *$py.class
 *.so
 .Python
-build/
-develop-eggs/
-dist/
-downloads/
-eggs/
-.eggs/
-lib/
-lib64/
-parts/
-sdist/
-var/
-wheels/
 *.egg-info/
-.installed.cfg
-*.egg
+.eggs/
+dist/
+build/
 
-# Virtual environments
-.env
-.venv
-env/
-venv/
-ENV/
+# Результаты (локальные картинки и данные)
+results/
 
 # IDE
 .idea/
@@ -39,6 +20,11 @@ ENV/
 
 # Jupyter
 .ipynb_checkpoints/
+
+# Виртуальные окружения
+venv/
+env/
+.env/
 
 # OS
 .DS_Store

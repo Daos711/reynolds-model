@@ -1,13 +1,14 @@
 """
 Модели толщины масляной плёнки.
 
-Все модели реализуют протокол FilmModel с методами:
-- H(phi, Z) — безразмерная толщина плёнки
-- dH_dphi(phi, Z) — производная по φ
-- dH_dt_star(phi, Z) — производная по безразмерному времени (опционально)
+По ТЗ film_model должен предоставлять callbacks:
+    - H(φ, Z) — толщина плёнки
+    - dH_dphi(φ, Z) — производная по φ
+    - dH_dt_star(φ, Z) — (опц.) производная по безразмерному времени
+
+Это обеспечивает универсальность для smooth/texture/roughness.
 """
 
-from abc import ABC, abstractmethod
 from typing import Protocol, runtime_checkable
 import numpy as np
 
@@ -17,12 +18,9 @@ from .config import BearingConfig
 @runtime_checkable
 class FilmModel(Protocol):
     """
-    Протокол для моделей толщины плёнки.
+    Протокол для модели толщины плёнки.
 
-    Все координаты безразмерные:
-    - phi ∈ [0, 2π] — окружная координата
-    - Z ∈ [-1, 1] — осевая координата
-    - H = h/c — безразмерная толщина
+    Все методы возвращают безразмерные величины (H = h/c).
     """
 
     def H(self, phi: np.ndarray, Z: np.ndarray) -> np.ndarray:
@@ -30,38 +28,36 @@ class FilmModel(Protocol):
         Безразмерная толщина плёнки H = h/c.
 
         Args:
-            phi: окружные координаты, shape (n_phi,) или (n_phi, n_z)
-            Z: осевые координаты, shape (n_z,) или (n_phi, n_z)
+            phi: углы, shape (n_phi,) или 2D meshgrid
+            Z: осевые координаты, shape (n_z,) или 2D meshgrid
 
         Returns:
-            H: безразмерная толщина, shape (n_phi, n_z)
+            H: толщина плёнки, shape (n_phi, n_z)
         """
         ...
 
     def dH_dphi(self, phi: np.ndarray, Z: np.ndarray) -> np.ndarray:
         """
-        Производная толщины по φ: ∂H/∂φ.
+        Производная ∂H/∂φ.
 
         Args:
-            phi: окружные координаты
+            phi: углы
             Z: осевые координаты
 
         Returns:
-            dH/dφ, shape (n_phi, n_z)
+            dH/dφ: shape (n_phi, n_z)
         """
         ...
 
 
 class SmoothFilmModel:
     """
-    Модель гладкого подшипника (без текстуры и шероховатости).
+    Модель гладкого подшипника без рельефа и шероховатости.
 
-    Толщина плёнки:
-        H = 1 + ε·cos(φ - φ₀)
+    H = 1 + ε·cos(φ - φ₀)
 
-    где:
-        ε — эксцентриситет
-        φ₀ — угол положения линии центров
+    Минимум зазора при φ - φ₀ = π (h_min = c(1-ε))
+    Максимум зазора при φ - φ₀ = 0 (h_max = c(1+ε))
     """
 
     def __init__(self, config: BearingConfig):
@@ -70,203 +66,91 @@ class SmoothFilmModel:
             config: конфигурация подшипника
         """
         self.config = config
-        self._epsilon = config.epsilon
-        self._phi0 = config.phi0
-
-    @property
-    def epsilon(self) -> float:
-        """Эксцентриситет."""
-        return self._epsilon
-
-    @epsilon.setter
-    def epsilon(self, value: float) -> None:
-        if not 0 < value < 1:
-            raise ValueError("Эксцентриситет должен быть в (0, 1)")
-        self._epsilon = value
-
-    @property
-    def phi0(self) -> float:
-        """Угол положения линии центров, рад."""
-        return self._phi0
-
-    @phi0.setter
-    def phi0(self, value: float) -> None:
-        self._phi0 = value
+        self.epsilon = config.epsilon
+        self.phi0 = config.phi0
 
     def H(self, phi: np.ndarray, Z: np.ndarray) -> np.ndarray:
         """
         Безразмерная толщина плёнки.
 
         H = 1 + ε·cos(φ - φ₀)
-
-        Args:
-            phi: окружные координаты, shape (n_phi,) или 2D
-            Z: осевые координаты, shape (n_z,) или 2D
-
-        Returns:
-            H: безразмерная толщина, shape (n_phi, n_z)
         """
-        # Приводим к 2D сетке если нужно
+        # Создаём 2D сетку если входы 1D
         if phi.ndim == 1 and Z.ndim == 1:
             PHI, _ = np.meshgrid(phi, Z, indexing='ij')
         else:
             PHI = phi
 
-        return 1.0 + self._epsilon * np.cos(PHI - self._phi0)
+        return 1.0 + self.epsilon * np.cos(PHI - self.phi0)
 
     def dH_dphi(self, phi: np.ndarray, Z: np.ndarray) -> np.ndarray:
         """
-        Производная толщины по φ.
-
-        ∂H/∂φ = -ε·sin(φ - φ₀)
-
-        Args:
-            phi: окружные координаты
-            Z: осевые координаты
-
-        Returns:
-            ∂H/∂φ, shape (n_phi, n_z)
+        Производная ∂H/∂φ = -ε·sin(φ - φ₀)
         """
         if phi.ndim == 1 and Z.ndim == 1:
             PHI, _ = np.meshgrid(phi, Z, indexing='ij')
         else:
             PHI = phi
 
-        return -self._epsilon * np.sin(PHI - self._phi0)
+        return -self.epsilon * np.sin(PHI - self.phi0)
 
     def dH_dt_star(self, phi: np.ndarray, Z: np.ndarray) -> np.ndarray:
         """
-        Производная толщины по безразмерному времени.
+        Производная по безразмерному времени ∂H/∂t* = 0 для стационарного случая.
 
-        Для стационарного случая ∂H/∂t* = 0.
-
-        Returns:
-            Нулевой массив, shape (n_phi, n_z)
+        Для динамических расчётов (этап 4) будет ненулевой.
         """
         if phi.ndim == 1 and Z.ndim == 1:
             return np.zeros((len(phi), len(Z)))
         return np.zeros_like(phi)
 
+    @property
     def h_min(self) -> float:
-        """
-        Минимальная безразмерная толщина плёнки.
+        """Минимальная размерная толщина, м."""
+        return self.config.c * (1 - self.epsilon)
 
-        H_min = 1 - ε (при φ - φ₀ = π)
-        """
-        return 1.0 - self._epsilon
-
+    @property
     def h_max(self) -> float:
-        """
-        Максимальная безразмерная толщина плёнки.
+        """Максимальная размерная толщина, м."""
+        return self.config.c * (1 + self.epsilon)
 
-        H_max = 1 + ε (при φ - φ₀ = 0)
-        """
-        return 1.0 + self._epsilon
+    @property
+    def H_min(self) -> float:
+        """Минимальная безразмерная толщина."""
+        return 1 - self.epsilon
 
-    def update_position(self, epsilon: float, phi0: float) -> None:
-        """
-        Обновить положение вала.
+    @property
+    def H_max(self) -> float:
+        """Максимальная безразмерная толщина."""
+        return 1 + self.epsilon
 
-        Args:
-            epsilon: новый эксцентриситет
-            phi0: новый угол положения линии центров
-        """
+    def update_position(self, epsilon: float, phi0: float):
+        """Обновить положение вала (для итеративных расчётов)."""
         self.epsilon = epsilon
-        self._phi0 = phi0
+        self.phi0 = phi0
 
 
-class FilmModelWithFlowFactors(ABC):
+class FilmModelWithFlowFactors(SmoothFilmModel):
     """
-    Базовый класс для моделей с flow factors (для шероховатости).
+    Базовый класс для моделей с flow factors (Patir-Cheng).
 
-    Flow factors модифицируют уравнение Рейнольдса:
-    ∂/∂φ(φₓ·H³·∂P/∂φ) + (D/L)²·∂/∂Z(φᵧ·H³·∂P/∂Z) = ∂(H·φₛ)/∂φ
+    Для этапа 7: шероховатость.
     """
-
-    @abstractmethod
-    def H(self, phi: np.ndarray, Z: np.ndarray) -> np.ndarray:
-        """Безразмерная толщина плёнки."""
-        ...
-
-    @abstractmethod
-    def dH_dphi(self, phi: np.ndarray, Z: np.ndarray) -> np.ndarray:
-        """Производная толщины по φ."""
-        ...
-
-    @abstractmethod
-    def phi_x(self, phi: np.ndarray, Z: np.ndarray) -> np.ndarray:
-        """
-        Flow factor φₓ для течения в окружном направлении.
-
-        Для гладкого подшипника φₓ = 1.
-        """
-        ...
-
-    @abstractmethod
-    def phi_z(self, phi: np.ndarray, Z: np.ndarray) -> np.ndarray:
-        """
-        Flow factor φᵧ для течения в осевом направлении.
-
-        Для гладкого подшипника φᵧ = 1.
-        """
-        ...
-
-    @abstractmethod
-    def phi_s(self, phi: np.ndarray, Z: np.ndarray) -> np.ndarray:
-        """
-        Shear flow factor φₛ.
-
-        Для гладкого подшипника φₛ = 1.
-        """
-        ...
-
-
-class SmoothFilmModelWithFlowFactors(FilmModelWithFlowFactors):
-    """
-    Гладкий подшипник с интерфейсом flow factors.
-
-    Все flow factors равны 1 (эквивалентно SmoothFilmModel).
-    """
-
-    def __init__(self, config: BearingConfig):
-        self._base = SmoothFilmModel(config)
-
-    @property
-    def epsilon(self) -> float:
-        return self._base.epsilon
-
-    @epsilon.setter
-    def epsilon(self, value: float) -> None:
-        self._base.epsilon = value
-
-    @property
-    def phi0(self) -> float:
-        return self._base.phi0
-
-    @phi0.setter
-    def phi0(self, value: float) -> None:
-        self._base.phi0 = value
-
-    def H(self, phi: np.ndarray, Z: np.ndarray) -> np.ndarray:
-        return self._base.H(phi, Z)
-
-    def dH_dphi(self, phi: np.ndarray, Z: np.ndarray) -> np.ndarray:
-        return self._base.dH_dphi(phi, Z)
 
     def phi_x(self, phi: np.ndarray, Z: np.ndarray) -> np.ndarray:
-        """Flow factor = 1 для гладкого подшипника."""
-        H = self.H(phi, Z)
-        return np.ones_like(H)
+        """Pressure flow factor по φ (=1 для гладкого)."""
+        if phi.ndim == 1 and Z.ndim == 1:
+            return np.ones((len(phi), len(Z)))
+        return np.ones_like(phi)
 
     def phi_z(self, phi: np.ndarray, Z: np.ndarray) -> np.ndarray:
-        """Flow factor = 1 для гладкого подшипника."""
-        H = self.H(phi, Z)
-        return np.ones_like(H)
+        """Pressure flow factor по Z (=1 для гладкого)."""
+        if phi.ndim == 1 and Z.ndim == 1:
+            return np.ones((len(phi), len(Z)))
+        return np.ones_like(phi)
 
     def phi_s(self, phi: np.ndarray, Z: np.ndarray) -> np.ndarray:
-        """Shear flow factor = 1 для гладкого подшипника."""
-        H = self.H(phi, Z)
-        return np.ones_like(H)
-
-    def update_position(self, epsilon: float, phi0: float) -> None:
-        self._base.update_position(epsilon, phi0)
+        """Shear flow factor (=0 для гладкого)."""
+        if phi.ndim == 1 and Z.ndim == 1:
+            return np.zeros((len(phi), len(Z)))
+        return np.zeros_like(phi)

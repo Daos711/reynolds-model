@@ -1,1 +1,1 @@
-"""Тесты для пакета bearing_solver."""
+"""Тесты для bearing_solver."""
