@@ -34,8 +34,15 @@ from .dynamics import (
     compute_damping,
     check_delta_sensitivity,
 )
+from .stability import (
+    StabilityResult,
+    build_state_matrix,
+    analyze_stability,
+    analyze_stability_from_coefficients,
+    find_stability_threshold,
+)
 
-__version__ = "0.4.0"
+__version__ = "0.5.0"
 
 __all__ = [
     # Конфигурация
@@ -71,4 +78,10 @@ __all__ = [
     "compute_stiffness",
     "compute_damping",
     "check_delta_sensitivity",
+    # Этап 5: Устойчивость
+    "StabilityResult",
+    "build_state_matrix",
+    "analyze_stability",
+    "analyze_stability_from_coefficients",
+    "find_stability_threshold",
 ]
