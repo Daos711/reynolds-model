@@ -103,6 +103,15 @@ def run_single_point_test(mass=30.0, W_ext=50e3, n_rpm=3000, verbose=True):
     elif stab.whirl_ratio > 0:
         print(f"    (вне типичного диапазона)")
 
+    # Информация о режиме демпфирования
+    print(f"\n  Режим демпфирования:")
+    print(f"    C²/(4mK) = {stab.damping_ratio:.1f}")
+    if stab.is_overdamped:
+        print(f"    OVERDAMPED (передемпфировано) — масса слабо влияет на max(Re(λ))")
+        print(f"    Медленная мода λ ≈ -K/C, быстрая λ ≈ -C/m")
+    else:
+        print(f"    UNDERDAMPED (недодемпфировано) — классические колебания")
+
     return stab, coeffs, eq
 
 
@@ -372,8 +381,12 @@ def run_mass_study(W_ext=50e3, n_rpm=3000, mass_values=None, plot=True):
     print(f"\nРавновесие: ε = {eq.epsilon:.4f}, φ₀ = {np.degrees(eq.phi0):.1f}°")
 
     results = []
+    print("\nМедленная мода (доминирующая):")
     for mass in mass_values:
         stab = analyze_stability(coeffs.K, coeffs.C, mass, n_rpm)
+
+        # Быстрые моды (λ3, λ4 - вещественные)
+        fast_modes = [lam.real for lam in stab.eigenvalues if abs(lam.imag) < 1.0]
 
         results.append({
             'mass': mass,
@@ -382,11 +395,17 @@ def run_mass_study(W_ext=50e3, n_rpm=3000, mass_values=None, plot=True):
             'margin': stab.stability_margin,
             'whirl_ratio': stab.whirl_ratio,
             'freq_hz': stab.dominant_freq_hz,
+            'fast_mode': min(fast_modes) if fast_modes else 0,
         })
 
         status = "OK" if stab.is_stable else "UNSTABLE"
-        print(f"m={mass:4.0f} кг: max_Re={stab.dominant_real:+8.1f}, "
-              f"f={stab.dominant_freq_hz:.1f} Гц, γ={stab.whirl_ratio:.3f} [{status}]")
+        print(f"  m={mass:4.0f} кг: λ_slow={stab.dominant_real:+8.1f}±{stab.dominant_imag:.0f}i, "
+              f"γ={stab.whirl_ratio:.3f} [{status}]")
+
+    print("\nБыстрая мода (зависит от m):")
+    for r in results:
+        print(f"  m={r['mass']:4.0f} кг: λ_fast={r['fast_mode']:+12.0f}  "
+              f"(≈ -C/m = {-coeffs.Cxx/r['mass']:.0f})")
 
     # График
     if plot and len(results) > 0:

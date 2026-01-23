@@ -66,6 +66,10 @@ class StabilityResult:
     mass: float                  # масса ротора, кг
     n_rpm: float                 # скорость вращения, об/мин
 
+    # Режим демпфирования
+    damping_ratio: float         # C²/(4mK) для диагонали, >1 = overdamped
+    is_overdamped: bool          # True если C² > 4mK
+
     def __str__(self) -> str:
         status = "УСТОЙЧИВО" if self.is_stable else "НЕУСТОЙЧИВО"
         return (
@@ -172,6 +176,17 @@ def analyze_stability(
     else:
         whirl_ratio = 0.0
 
+    # Оценка режима демпфирования (по диагонали для простоты)
+    # Для m·ẍ + c·ẋ + k·x = 0: overdamped если c² > 4mk
+    # damping_ratio = c²/(4mk), >1 означает overdamped
+    K_diag = 0.5 * (abs(K[0, 0]) + abs(K[1, 1]))
+    C_diag = 0.5 * (abs(C[0, 0]) + abs(C[1, 1]))
+    if mass > 0 and K_diag > 0:
+        damping_ratio = C_diag**2 / (4 * mass * K_diag)
+    else:
+        damping_ratio = 0.0
+    is_overdamped = damping_ratio > 1.0
+
     return StabilityResult(
         eigenvalues=eigenvalues,
         is_stable=is_stable,
@@ -184,6 +199,8 @@ def analyze_stability(
         shaft_speed_hz=shaft_speed_hz,
         mass=mass,
         n_rpm=n_rpm,
+        damping_ratio=damping_ratio,
+        is_overdamped=is_overdamped,
     )
 
 
