@@ -3,6 +3,7 @@ bearing_solver - Пакет для расчёта гидродинамическ
 
 Этап 1: Базовый решатель уравнения Рейнольдса.
 Этап 2: Расчёт сил, трения и расхода смазки.
+Этап 3: Поиск положения равновесия вала.
 """
 
 from .config import BearingConfig, LubricantVG100
@@ -21,8 +22,13 @@ from .forces import (
     compute_stage2,
     get_shear_stress_components,
 )
+from .equilibrium import (
+    EquilibriumResult,
+    find_equilibrium,
+    find_equilibrium_1d,
+)
 
-__version__ = "0.2.0"
+__version__ = "0.3.0"
 
 __all__ = [
     # Конфигурация
@@ -47,4 +53,9 @@ __all__ = [
     "compute_flow",
     "compute_losses",
     "compute_stage2",
+    "get_shear_stress_components",
+    # Этап 3: Равновесие
+    "EquilibriumResult",
+    "find_equilibrium",
+    "find_equilibrium_1d",
 ]
