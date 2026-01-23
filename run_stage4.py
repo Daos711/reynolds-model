@@ -20,6 +20,10 @@ from bearing_solver import (
     compute_dynamic_coefficients,
     check_delta_sensitivity,
 )
+from bearing_solver.dynamics import (
+    compute_forces_at_position,
+    compute_forces_with_squeeze,
+)
 
 
 def create_test_config():
@@ -278,10 +282,278 @@ def run_epsilon_study(plot=True):
     return epsilons, results
 
 
+def run_grid_convergence_test(verbose=True):
+    """
+    Тест 5: Сеточная сходимость для K и C.
+    Проверка на сетках 90×25, 180×50, 360×100.
+    """
+    print("\n" + "=" * 60)
+    print("ТЕСТ 5: Сеточная сходимость K и C")
+    print("=" * 60)
+
+    config = create_test_config()
+    epsilon = 0.6
+    phi0 = np.radians(45)
+
+    grids = [(90, 25), (180, 50), (360, 100)]
+    results = {}
+
+    for n_phi, n_z in grids:
+        print(f"\nСетка {n_phi}×{n_z}...")
+        coeffs = compute_dynamic_coefficients(
+            config, epsilon, phi0,
+            delta_e=0.01, delta_v_star=0.01,
+            n_phi=n_phi, n_z=n_z,
+            verbose=False
+        )
+        results[(n_phi, n_z)] = coeffs
+        print(f"  Kxx = {coeffs.Kxx/1e6:.2f} МН/м, Kyy = {coeffs.Kyy/1e6:.2f} МН/м")
+        print(f"  Cxx = {coeffs.Cxx/1e3:.2f} кН·с/м, Cyy = {coeffs.Cyy/1e3:.2f} кН·с/м")
+
+    # Сравнение с finest grid
+    print("\n" + "-" * 40)
+    print("Сходимость (относительно 360×100):")
+
+    ref = results[(360, 100)]
+    passed = True
+
+    for grid in [(90, 25), (180, 50)]:
+        test = results[grid]
+        print(f"\n  {grid[0]}×{grid[1]} vs 360×100:")
+        for attr in ['Kxx', 'Kyy', 'Cxx', 'Cyy']:
+            ref_val = getattr(ref, attr)
+            test_val = getattr(test, attr)
+            if ref_val != 0:
+                change = abs(test_val - ref_val) / abs(ref_val) * 100
+                status = "OK" if change < 10 else "WARN" if change < 20 else "FAIL"
+                if status == "FAIL":
+                    passed = False
+                print(f"    Δ{attr}: {change:.1f}% [{status}]")
+
+    return results, passed
+
+
+def run_damping_linearity_test(verbose=True):
+    """
+    Тест 6: Линейность демпфирования по скорости.
+    Проверка F(v*) ≈ линейная в диапазоне ±delta_v*.
+    """
+    print("\n" + "=" * 60)
+    print("ТЕСТ 6: Линейность демпфирования по скорости")
+    print("=" * 60)
+
+    config = create_test_config()
+    epsilon = 0.6
+    phi0 = np.radians(45)
+    delta_v = 0.01
+
+    print(f"\nПозиция: ε={epsilon}, φ₀={np.degrees(phi0):.0f}°")
+    print(f"Проверка линейности F(v*) в диапазоне ±{delta_v}")
+
+    # Базовые силы (без squeeze)
+    Fx_0, Fy_0 = compute_forces_with_squeeze(
+        config, epsilon, phi0, 0.0, 0.0, n_phi=180, n_z=50
+    )
+
+    # Силы при +vx* и -vx*
+    Fx_p, Fy_p = compute_forces_with_squeeze(
+        config, epsilon, phi0, +delta_v, 0.0, n_phi=180, n_z=50
+    )
+    Fx_m, Fy_m = compute_forces_with_squeeze(
+        config, epsilon, phi0, -delta_v, 0.0, n_phi=180, n_z=50
+    )
+
+    # Линейность: F(+v) - F(0) ≈ -(F(-v) - F(0))
+    # Или эквивалентно: F(+v) + F(-v) ≈ 2*F(0)
+    dFx_plus = Fx_p - Fx_0
+    dFx_minus = Fx_m - Fx_0
+
+    # Нелинейность = |dF(+v) + dF(-v)| / |dF(+v) - dF(-v)|
+    sum_dFx = dFx_plus + dFx_minus
+    diff_dFx = dFx_plus - dFx_minus
+
+    if abs(diff_dFx) > 1e-10:
+        nonlinearity_x = abs(sum_dFx) / abs(diff_dFx) * 100
+    else:
+        nonlinearity_x = 0.0
+
+    print(f"\nПо vx*:")
+    print(f"  F(+v*) - F(0) = {dFx_plus/1000:.2f} кН")
+    print(f"  F(-v*) - F(0) = {dFx_minus/1000:.2f} кН")
+    print(f"  Нелинейность: {nonlinearity_x:.1f}%")
+
+    # То же для vy*
+    Fx_yp, Fy_yp = compute_forces_with_squeeze(
+        config, epsilon, phi0, 0.0, +delta_v, n_phi=180, n_z=50
+    )
+    Fx_ym, Fy_ym = compute_forces_with_squeeze(
+        config, epsilon, phi0, 0.0, -delta_v, n_phi=180, n_z=50
+    )
+
+    dFy_plus = Fy_yp - Fy_0
+    dFy_minus = Fy_ym - Fy_0
+    sum_dFy = dFy_plus + dFy_minus
+    diff_dFy = dFy_plus - dFy_minus
+
+    if abs(diff_dFy) > 1e-10:
+        nonlinearity_y = abs(sum_dFy) / abs(diff_dFy) * 100
+    else:
+        nonlinearity_y = 0.0
+
+    print(f"\nПо vy*:")
+    print(f"  F(+v*) - F(0) = {dFy_plus/1000:.2f} кН")
+    print(f"  F(-v*) - F(0) = {dFy_minus/1000:.2f} кН")
+    print(f"  Нелинейность: {nonlinearity_y:.1f}%")
+
+    # Критерий
+    print("\n" + "-" * 40)
+    passed = True
+    for name, val in [("vx*", nonlinearity_x), ("vy*", nonlinearity_y)]:
+        status = "OK" if val < 10 else "WARN" if val < 20 else "FAIL"
+        if val >= 20:
+            passed = False
+        print(f"  Нелинейность по {name}: {val:.1f}% [{status}]")
+
+    if not passed:
+        print("\n  WARN: Высокая нелинейность может быть вызвана кавитацией")
+
+    return passed
+
+
+def run_sign_consistency_test(W_ext=50e3, verbose=True):
+    """
+    Тест 7: Согласованность знаков F ≈ W_ext в равновесии.
+
+    Соглашение в коде: F = W_ext (сила плёнки равна внешней нагрузке).
+    Это соответствует определению F как реакции опоры.
+    """
+    print("\n" + "=" * 60)
+    print("ТЕСТ 7: Согласованность знаков (F ≈ W_ext)")
+    print("=" * 60)
+
+    config = create_test_config()
+
+    # Находим равновесие
+    print(f"\nНагрузка: W_ext = {W_ext/1000:.0f} кН вниз (-y)")
+    eq = find_equilibrium(config, W_ext=W_ext, load_angle=-np.pi/2, verbose=False)
+
+    print(f"Равновесие: ε = {eq.epsilon:.4f}, φ₀ = {np.degrees(eq.phi0):.1f}°")
+
+    # Внешняя нагрузка (вектор)
+    Wx_ext = W_ext * np.cos(-np.pi/2)  # = 0
+    Wy_ext = W_ext * np.sin(-np.pi/2)  # = -W_ext
+
+    # Сила от плёнки в положении равновесия
+    Fx, Fy = compute_forces_at_position(
+        config, eq.ex, eq.ey, n_phi=180, n_z=50
+    )
+
+    print(f"\nВнешняя нагрузка (цель):")
+    print(f"  Wx_ext = {Wx_ext/1000:.2f} кН")
+    print(f"  Wy_ext = {Wy_ext/1000:.2f} кН")
+
+    print(f"\nСила от плёнки (факт):")
+    print(f"  Fx = {Fx/1000:.2f} кН")
+    print(f"  Fy = {Fy/1000:.2f} кН")
+
+    # Невязка F - W_ext (должна быть близка к нулю)
+    diff_x = Fx - Wx_ext
+    diff_y = Fy - Wy_ext
+    diff_mag = np.sqrt(diff_x**2 + diff_y**2)
+    W_mag = np.sqrt(Wx_ext**2 + Wy_ext**2)
+
+    residual = diff_mag / W_mag * 100 if W_mag > 0 else 0
+
+    print(f"\nНевязка (F - W_ext):")
+    print(f"  Δx = {diff_x/1000:.2f} кН")
+    print(f"  Δy = {diff_y/1000:.2f} кН")
+    print(f"  |Δ|/|W| = {residual:.2f}%")
+
+    # Критерий
+    print("\n" + "-" * 40)
+    status = "OK" if residual < 5 else "WARN" if residual < 10 else "FAIL"
+    passed = residual < 10
+    print(f"  Невязка равновесия: {residual:.2f}% [{status}]")
+
+    return passed
+
+
+def run_local_coordinates_test(W_ext=50e3, verbose=True):
+    """
+    Тест 8: K и C в локальной системе координат.
+    Локальная система: x' вдоль линии центров, y' перпендикулярно.
+    """
+    print("\n" + "=" * 60)
+    print("ТЕСТ 8: K и C в локальной системе координат")
+    print("=" * 60)
+
+    config = create_test_config()
+
+    # Находим равновесие
+    eq = find_equilibrium(config, W_ext=W_ext, load_angle=-np.pi/2, verbose=False)
+
+    print(f"\nРавновесие: ε = {eq.epsilon:.4f}, φ₀ = {np.degrees(eq.phi0):.1f}°")
+
+    # Расчёт K и C в глобальной системе
+    coeffs = compute_dynamic_coefficients(
+        config, eq.epsilon, eq.phi0,
+        delta_e=0.01, delta_v_star=0.01,
+        n_phi=180, n_z=50,
+        verbose=False
+    )
+
+    # Матрица поворота на угол φ₀
+    # x' = cos(φ₀)·x + sin(φ₀)·y  (вдоль линии центров)
+    # y' = -sin(φ₀)·x + cos(φ₀)·y  (перпендикулярно)
+    c, s = np.cos(eq.phi0), np.sin(eq.phi0)
+    R = np.array([[c, s], [-s, c]])
+
+    # K' = R·K·Rᵀ, C' = R·C·Rᵀ
+    K_local = R @ coeffs.K @ R.T
+    C_local = R @ coeffs.C @ R.T
+
+    print("\nГлобальная система (x, y):")
+    print("K (МН/м):")
+    print(f"  [{coeffs.Kxx/1e6:+8.2f}  {coeffs.Kxy/1e6:+8.2f}]")
+    print(f"  [{coeffs.Kyx/1e6:+8.2f}  {coeffs.Kyy/1e6:+8.2f}]")
+    print("C (кН·с/м):")
+    print(f"  [{coeffs.Cxx/1e3:+8.2f}  {coeffs.Cxy/1e3:+8.2f}]")
+    print(f"  [{coeffs.Cyx/1e3:+8.2f}  {coeffs.Cyy/1e3:+8.2f}]")
+
+    print("\nЛокальная система (x' вдоль лин. центров, y' перпендикулярно):")
+    print("K' (МН/м):")
+    print(f"  [{K_local[0,0]/1e6:+8.2f}  {K_local[0,1]/1e6:+8.2f}]")
+    print(f"  [{K_local[1,0]/1e6:+8.2f}  {K_local[1,1]/1e6:+8.2f}]")
+    print("C' (кН·с/м):")
+    print(f"  [{C_local[0,0]/1e3:+8.2f}  {C_local[0,1]/1e3:+8.2f}]")
+    print(f"  [{C_local[1,0]/1e3:+8.2f}  {C_local[1,1]/1e3:+8.2f}]")
+
+    # Типичные проверки для локальной системы:
+    # - K'xx > 0 (жёсткость вдоль линии центров положительная)
+    # - C'xx > 0, C'yy > 0 (диагональное демпфирование положительное)
+    print("\n" + "-" * 40)
+    print("Проверки в локальной системе:")
+
+    checks = [
+        ("K'xx > 0 (жёсткость радиальная)", K_local[0,0] > 0),
+        ("C'xx > 0 (демпф. радиальное)", C_local[0,0] > 0),
+        ("C'yy > 0 (демпф. тангенциальное)", C_local[1,1] > 0),
+    ]
+
+    passed = True
+    for desc, ok in checks:
+        status = "OK" if ok else "WARN"
+        if not ok:
+            passed = False
+        print(f"  {desc}: [{status}]")
+
+    return K_local, C_local, passed
+
+
 def main():
     parser = argparse.ArgumentParser(description="Тестирование Этапа 4: K и C")
     parser.add_argument("--test", type=int, default=0,
-                       help="Номер теста (0=все, 1-4)")
+                       help="Номер теста (0=все, 1-8)")
     parser.add_argument("--plot", action="store_true", default=True,
                        help="Показывать графики")
     parser.add_argument("--no-plot", dest="plot", action="store_false")
@@ -309,6 +581,26 @@ def main():
 
     if args.test == 0 or args.test == 4:
         epsilons, results = run_epsilon_study(plot=args.plot)
+
+    if args.test == 0 or args.test == 5:
+        results, passed = run_grid_convergence_test(verbose=args.verbose)
+        if not passed:
+            all_passed = False
+
+    if args.test == 0 or args.test == 6:
+        passed = run_damping_linearity_test(verbose=args.verbose)
+        if not passed:
+            all_passed = False
+
+    if args.test == 0 or args.test == 7:
+        passed = run_sign_consistency_test(W_ext=50e3, verbose=args.verbose)
+        if not passed:
+            all_passed = False
+
+    if args.test == 0 or args.test == 8:
+        K_local, C_local, passed = run_local_coordinates_test(W_ext=50e3, verbose=args.verbose)
+        if not passed:
+            all_passed = False
 
     # Итог
     print("\n" + "=" * 60)
