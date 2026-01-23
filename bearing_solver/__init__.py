@@ -41,8 +41,14 @@ from .stability import (
     analyze_stability_from_coefficients,
     find_stability_threshold,
 )
+from .texture import (
+    TextureParams,
+    TexturedFilmModel,
+    generate_regular_centers,
+    generate_phyllotaxis_centers,
+)
 
-__version__ = "0.5.0"
+__version__ = "0.6.0"
 
 __all__ = [
     # Конфигурация
@@ -84,4 +90,9 @@ __all__ = [
     "analyze_stability",
     "analyze_stability_from_coefficients",
     "find_stability_threshold",
+    # Этап 6: Текстура
+    "TextureParams",
+    "TexturedFilmModel",
+    "generate_regular_centers",
+    "generate_phyllotaxis_centers",
 ]
