@@ -181,13 +181,16 @@ def run_visualization_test(plot=True):
 def run_comparison_test(W_ext=50e3, mass=30.0, plot=True):
     """
     Тест 3: Сравнение гладкий vs текстурированный по всем этапам.
+
+    Режим A: Фиксированное положение (ε, φ₀), смотрим W, p_max
+    Режим B: Фиксированная нагрузка W_ext, находим НОВОЕ равновесие
     """
     print("\n" + "=" * 60)
     print("ТЕСТ 3: Сравнение гладкий vs текстурированный")
     print("=" * 60)
 
-    config = create_test_config(n_phi=180, n_z=50)
-    n_rpm = config.n_rpm
+    base_config = create_test_config(n_phi=180, n_z=50)
+    n_rpm = base_config.n_rpm
 
     # Параметры текстуры по ГОСТ
     tex_params = TextureParams(
@@ -198,30 +201,61 @@ def run_comparison_test(W_ext=50e3, mass=30.0, plot=True):
         pattern='phyllotaxis'
     )
 
-    results = {}
+    # Фабрики для создания моделей с учётом разных конфигураций (ε, φ₀)
+    def smooth_factory(cfg):
+        return SmoothFilmModel(cfg)
 
-    for name, film_model in [
-        ('Гладкая', SmoothFilmModel(config)),
-        ('Текстура', TexturedFilmModel(config, tex_params))
-    ]:
+    def texture_factory(cfg):
+        return TexturedFilmModel(cfg, tex_params)
+
+    print("\n--- РЕЖИМ A: Фиксированное положение (ε=0.6, φ₀=45°) ---")
+    print("Сравниваем W, p_max при одинаковом (ε, φ₀)")
+
+    results_A = {}
+    for name, factory in [('Гладкая', smooth_factory), ('Текстура', texture_factory)]:
+        film_model = factory(base_config)
+        reynolds = solve_reynolds(base_config, film_model=film_model)
+        forces = compute_forces(reynolds, base_config)
+        results_A[name] = {'W': forces.W, 'p_max': reynolds.p_max}
+        print(f"  {name}: W = {forces.W/1000:.2f} кН, p_max = {reynolds.p_max/1e6:.2f} МПа")
+
+    dW = (results_A['Текстура']['W'] - results_A['Гладкая']['W']) / results_A['Гладкая']['W'] * 100
+    dp = (results_A['Текстура']['p_max'] - results_A['Гладкая']['p_max']) / results_A['Гладкая']['p_max'] * 100
+    print(f"  Разница: ΔW = {dW:+.1f}%, Δp_max = {dp:+.1f}%")
+
+    print(f"\n--- РЕЖИМ B: Фиксированная нагрузка W_ext = {W_ext/1000:.0f} кН ---")
+    print("Для каждой модели находим своё равновесие (ε, φ₀)")
+
+    results_B = {}
+
+    for name, factory in [('Гладкая', smooth_factory), ('Текстура', texture_factory)]:
         print(f"\n{name} модель:")
 
-        # Этап 2: Решение Рейнольдса
-        reynolds = solve_reynolds(config, film_model=film_model)
-        forces = compute_forces(reynolds, config)
-
-        print(f"  Этап 2: W = {forces.W/1000:.2f} кН, p_max = {reynolds.p_max/1e6:.2f} МПа")
-
-        # Этап 3: Равновесие
-        # Создаём временную конфигурацию для equilibrium (без текстуры - просто позиция)
-        eq = find_equilibrium(config, W_ext=W_ext, load_angle=-np.pi/2, verbose=False)
+        # Этап 3: Равновесие с текстурой
+        eq = find_equilibrium(
+            base_config, W_ext=W_ext, load_angle=-np.pi/2,
+            verbose=False, film_model_factory=factory
+        )
         print(f"  Этап 3: ε = {eq.epsilon:.4f}, φ₀ = {np.degrees(eq.phi0):.1f}°")
 
-        # Этап 4: K, C (используем найденное равновесие)
+        # Этап 2 при равновесии (для h_min)
+        eq_config = BearingConfig(
+            R=base_config.R, L=base_config.L, c=base_config.c,
+            epsilon=eq.epsilon, phi0=eq.phi0,
+            n_rpm=base_config.n_rpm, mu=base_config.mu,
+            n_phi=180, n_z=50
+        )
+        film_model = factory(eq_config)
+        reynolds = solve_reynolds(eq_config, film_model=film_model)
+        forces = compute_forces(reynolds, eq_config)
+        print(f"  Этап 2: W = {forces.W/1000:.2f} кН, p_max = {reynolds.p_max/1e6:.2f} МПа, h_min = {reynolds.h_min*1e6:.2f} мкм")
+
+        # Этап 4: K, C с текстурой
         coeffs = compute_dynamic_coefficients(
-            config, eq.epsilon, eq.phi0,
+            base_config, eq.epsilon, eq.phi0,
             delta_e=0.01, delta_v_star=0.01,
-            n_phi=180, n_z=50, verbose=False
+            n_phi=180, n_z=50, verbose=False,
+            film_model_factory=factory
         )
         print(f"  Этап 4: Kxx = {coeffs.Kxx/1e6:.0f} МН/м, Cxx = {coeffs.Cxx/1e3:.0f} кН·с/м")
 
@@ -230,40 +264,43 @@ def run_comparison_test(W_ext=50e3, mass=30.0, plot=True):
         status = "УСТОЙЧИВО" if stab.is_stable else "НЕУСТОЙЧИВО"
         print(f"  Этап 5: {status}, margin = {stab.stability_margin:.1f} 1/с, γ = {stab.whirl_ratio:.3f}")
 
-        results[name] = {
+        results_B[name] = {
             'W': forces.W,
             'p_max': reynolds.p_max,
             'h_min': reynolds.h_min,
             'epsilon': eq.epsilon,
             'phi0': eq.phi0,
             'Kxx': coeffs.Kxx,
+            'Kyy': coeffs.Kyy,
             'Cxx': coeffs.Cxx,
+            'Cyy': coeffs.Cyy,
             'margin': stab.stability_margin,
             'whirl_ratio': stab.whirl_ratio,
             'is_stable': stab.is_stable,
         }
 
-    # Сравнение
+    # Сравнение режима B
     print("\n" + "-" * 40)
-    print("Сравнение (Текстура vs Гладкая):")
+    print("Сравнение РЕЖИМ B (Текстура vs Гладкая):")
 
-    smooth = results['Гладкая']
-    tex = results['Текстура']
+    smooth = results_B['Гладкая']
+    tex = results_B['Текстура']
 
     for param, unit, scale in [
-        ('W', 'кН', 1e-3),
-        ('p_max', 'МПа', 1e-6),
+        ('epsilon', '', 1),
         ('h_min', 'мкм', 1e6),
         ('Kxx', 'МН/м', 1e-6),
+        ('Kyy', 'МН/м', 1e-6),
         ('Cxx', 'кН·с/м', 1e-3),
+        ('Cyy', 'кН·с/м', 1e-3),
         ('margin', '1/с', 1),
     ]:
         v_smooth = smooth[param] * scale
         v_tex = tex[param] * scale
         diff = (v_tex - v_smooth) / abs(v_smooth) * 100 if v_smooth != 0 else 0
-        print(f"  {param}: {v_smooth:.2f} → {v_tex:.2f} {unit} ({diff:+.1f}%)")
+        print(f"  {param}: {v_smooth:.4f} → {v_tex:.4f} {unit} ({diff:+.1f}%)")
 
-    return results
+    return {'A': results_A, 'B': results_B}
 
 
 def run_fn_study(plot=True):

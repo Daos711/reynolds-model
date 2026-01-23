@@ -16,13 +16,14 @@
 """
 
 from dataclasses import dataclass
-from typing import Optional
+from typing import Optional, Callable
 import numpy as np
 from scipy.optimize import root, minimize, brentq, minimize_scalar
 
 from .config import BearingConfig
 from .reynolds_solver import solve_reynolds, ReynoldsResult
 from .forces import compute_forces, compute_stage2, Stage2Result, BearingForces
+from .film_models import FilmModel
 
 
 @dataclass
@@ -89,7 +90,8 @@ def find_equilibrium(
     max_iter: int = 50,
     coarse_grid: tuple = (90, 25),
     fine_grid: tuple = (180, 50),
-    verbose: bool = False
+    verbose: bool = False,
+    film_model_factory: Optional[Callable[[BearingConfig], FilmModel]] = None
 ) -> EquilibriumResult:
     """
     Найти положение равновесия вала (ВЕКТОРНАЯ ПОСТАНОВКА).
@@ -125,7 +127,8 @@ def find_equilibrium(
             base_config, eps, phi0,
             n_phi=coarse_grid[0], n_z=coarse_grid[1]
         )
-        reynolds = solve_reynolds(config)
+        film_model = film_model_factory(config) if film_model_factory else None
+        reynolds = solve_reynolds(config, film_model=film_model)
         forces = compute_forces(reynolds, config)
         return forces.Fx, forces.Fy, forces.W, forces.force_angle, forces.attitude_angle
 
@@ -215,7 +218,8 @@ def find_equilibrium(
         base_config, eps_found, phi0_found,
         n_phi=fine_grid[0], n_z=fine_grid[1]
     )
-    reynolds_final = solve_reynolds(config_final)
+    film_model_final = film_model_factory(config_final) if film_model_factory else None
+    reynolds_final = solve_reynolds(config_final, film_model=film_model_final)
     stage2_final = compute_stage2(reynolds_final, config_final, return_tau_field=False)
 
     Fx_achieved = stage2_final.forces.Fx
@@ -265,7 +269,8 @@ def find_equilibrium_1d(
     tol: float = 1e-2,
     coarse_grid: tuple = (90, 25),
     fine_grid: tuple = (180, 50),
-    verbose: bool = False
+    verbose: bool = False,
+    film_model_factory: Optional[Callable[[BearingConfig], FilmModel]] = None
 ) -> EquilibriumResult:
     """
     Упрощённый 1D поиск (только для гладкого подшипника).
@@ -300,7 +305,8 @@ def find_equilibrium_1d(
             base_config, eps, phi0,
             n_phi=coarse_grid[0], n_z=coarse_grid[1]
         )
-        reynolds = solve_reynolds(config)
+        film_model = film_model_factory(config) if film_model_factory else None
+        reynolds = solve_reynolds(config, film_model=film_model)
         forces = compute_forces(reynolds, config)
 
         if verbose and call_count[0] % 3 == 0:
@@ -343,7 +349,8 @@ def find_equilibrium_1d(
         base_config, eps_found, phi0_found,
         n_phi=fine_grid[0], n_z=fine_grid[1]
     )
-    reynolds_final = solve_reynolds(config_final)
+    film_model_final = film_model_factory(config_final) if film_model_factory else None
+    reynolds_final = solve_reynolds(config_final, film_model=film_model_final)
     stage2_final = compute_stage2(reynolds_final, config_final)
 
     Fx = stage2_final.forces.Fx

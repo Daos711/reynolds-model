@@ -28,12 +28,13 @@
 """
 
 from dataclasses import dataclass
-from typing import Optional, Tuple
+from typing import Optional, Tuple, Callable
 import numpy as np
 
 from .config import BearingConfig
 from .reynolds_solver import solve_reynolds, ReynoldsSolver, ReynoldsResult
 from .forces import compute_forces, BearingForces
+from .film_models import FilmModel
 
 
 @dataclass
@@ -123,7 +124,8 @@ def compute_forces_at_position(
     ex: float,
     ey: float,
     n_phi: int = 180,
-    n_z: int = 50
+    n_z: int = 50,
+    film_model_factory: Optional[Callable[[BearingConfig], FilmModel]] = None
 ) -> Tuple[float, float]:
     """
     Вычислить силы Fx, Fy для заданного положения (ex, ey).
@@ -138,7 +140,8 @@ def compute_forces_at_position(
     epsilon = np.clip(epsilon, 0.01, 0.99)
 
     config = _create_config_for_position(base_config, epsilon, phi0, n_phi, n_z)
-    reynolds = solve_reynolds(config)
+    film_model = film_model_factory(config) if film_model_factory else None
+    reynolds = solve_reynolds(config, film_model=film_model)
     forces = compute_forces(reynolds, config)
 
     return forces.Fx, forces.Fy
@@ -151,7 +154,8 @@ def compute_forces_with_squeeze(
     vx_star: float,
     vy_star: float,
     n_phi: int = 180,
-    n_z: int = 50
+    n_z: int = 50,
+    film_model_factory: Optional[Callable[[BearingConfig], FilmModel]] = None
 ) -> Tuple[float, float]:
     """
     Вычислить силы Fx, Fy со squeeze-членом.
@@ -174,7 +178,8 @@ def compute_forces_with_squeeze(
     dH_dt_star = vx_star * np.cos(PHI) + vy_star * np.sin(PHI)
 
     # Решаем с squeeze-членом
-    reynolds = solve_reynolds(config, dH_dt_star=dH_dt_star)
+    film_model = film_model_factory(config) if film_model_factory else None
+    reynolds = solve_reynolds(config, film_model=film_model, dH_dt_star=dH_dt_star)
     forces = compute_forces(reynolds, config)
 
     return forces.Fx, forces.Fy
@@ -186,7 +191,8 @@ def compute_stiffness(
     ey: float,
     delta_e: float = 0.01,
     n_phi: int = 180,
-    n_z: int = 50
+    n_z: int = 50,
+    film_model_factory: Optional[Callable[[BearingConfig], FilmModel]] = None
 ) -> Tuple[float, float, float, float]:
     """
     Вычислить коэффициенты жёсткости методом конечных разностей.
@@ -205,12 +211,12 @@ def compute_stiffness(
     delta_y = delta_e * c
 
     # Смещения по x
-    Fx_xp, Fy_xp = compute_forces_at_position(base_config, ex + delta_e, ey, n_phi, n_z)
-    Fx_xm, Fy_xm = compute_forces_at_position(base_config, ex - delta_e, ey, n_phi, n_z)
+    Fx_xp, Fy_xp = compute_forces_at_position(base_config, ex + delta_e, ey, n_phi, n_z, film_model_factory)
+    Fx_xm, Fy_xm = compute_forces_at_position(base_config, ex - delta_e, ey, n_phi, n_z, film_model_factory)
 
     # Смещения по y
-    Fx_yp, Fy_yp = compute_forces_at_position(base_config, ex, ey + delta_e, n_phi, n_z)
-    Fx_ym, Fy_ym = compute_forces_at_position(base_config, ex, ey - delta_e, n_phi, n_z)
+    Fx_yp, Fy_yp = compute_forces_at_position(base_config, ex, ey + delta_e, n_phi, n_z, film_model_factory)
+    Fx_ym, Fy_ym = compute_forces_at_position(base_config, ex, ey - delta_e, n_phi, n_z, film_model_factory)
 
     # Жёсткость: Kij = -∂Fi/∂xj
     Kxx = -(Fx_xp - Fx_xm) / (2 * delta_x)
@@ -227,7 +233,8 @@ def compute_damping(
     phi0: float,
     delta_v_star: float = 0.01,
     n_phi: int = 180,
-    n_z: int = 50
+    n_z: int = 50,
+    film_model_factory: Optional[Callable[[BearingConfig], FilmModel]] = None
 ) -> Tuple[float, float, float, float]:
     """
     Вычислить коэффициенты демпфирования из squeeze-члена.
@@ -248,17 +255,17 @@ def compute_damping(
 
     # Базовые силы (без squeeze)
     Fx_base, Fy_base = compute_forces_with_squeeze(
-        base_config, epsilon, phi0, 0.0, 0.0, n_phi, n_z
+        base_config, epsilon, phi0, 0.0, 0.0, n_phi, n_z, film_model_factory
     )
 
     # Силы при vx* = delta_v_star
     Fx_vx, Fy_vx = compute_forces_with_squeeze(
-        base_config, epsilon, phi0, delta_v_star, 0.0, n_phi, n_z
+        base_config, epsilon, phi0, delta_v_star, 0.0, n_phi, n_z, film_model_factory
     )
 
     # Силы при vy* = delta_v_star
     Fx_vy, Fy_vy = compute_forces_with_squeeze(
-        base_config, epsilon, phi0, 0.0, delta_v_star, n_phi, n_z
+        base_config, epsilon, phi0, 0.0, delta_v_star, n_phi, n_z, film_model_factory
     )
 
     # Изменение сил от squeeze
@@ -290,7 +297,8 @@ def compute_dynamic_coefficients(
     delta_v_star: float = 0.01,
     n_phi: int = 180,
     n_z: int = 50,
-    verbose: bool = False
+    verbose: bool = False,
+    film_model_factory: Optional[Callable[[BearingConfig], FilmModel]] = None
 ) -> DynamicCoefficients:
     """
     Вычислить полный набор динамических коэффициентов.
@@ -319,14 +327,14 @@ def compute_dynamic_coefficients(
     if verbose:
         print("Расчёт жёсткости K...")
     Kxx, Kxy, Kyx, Kyy = compute_stiffness(
-        base_config, ex, ey, delta_e, n_phi, n_z
+        base_config, ex, ey, delta_e, n_phi, n_z, film_model_factory
     )
 
     # Демпфирование
     if verbose:
         print("Расчёт демпфирования C...")
     Cxx, Cxy, Cyx, Cyy = compute_damping(
-        base_config, epsilon, phi0, delta_v_star, n_phi, n_z
+        base_config, epsilon, phi0, delta_v_star, n_phi, n_z, film_model_factory
     )
 
     # Безразмерные коэффициенты
