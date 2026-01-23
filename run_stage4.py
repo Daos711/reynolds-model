@@ -269,10 +269,10 @@ def run_epsilon_study(plot=True):
         ax2.grid(True, alpha=0.3)
 
         plt.tight_layout()
-        out_dir = Path("output")
-        out_dir.mkdir(exist_ok=True)
-        plt.savefig(out_dir / 'stage4_epsilon_study.png', dpi=150)
-        print(f"\nГрафик сохранён: {out_dir / 'stage4_epsilon_study.png'}")
+        out_dir = Path("results/stage4")
+        out_dir.mkdir(parents=True, exist_ok=True)
+        plt.savefig(out_dir / 'epsilon_study.png', dpi=150)
+        print(f"\nГрафик сохранён: {out_dir / 'epsilon_study.png'}")
         plt.close()
 
     return epsilons, results
