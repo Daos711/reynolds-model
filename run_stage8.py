@@ -16,6 +16,8 @@ import pandas as pd
 from pathlib import Path
 from dataclasses import dataclass
 from typing import Optional, Dict, List, Tuple, Callable
+from concurrent.futures import ProcessPoolExecutor, as_completed
+import multiprocessing
 import warnings
 warnings.filterwarnings('ignore')
 
@@ -432,64 +434,114 @@ def run_block2_clearance_sweep():
 
 
 # ============================================================================
-# БЛОК 3: Оптимизация текстуры
+# БЛОК 3: Оптимизация текстуры (ПАРАЛЛЕЛЬНО)
 # ============================================================================
 
-def run_block3_texture_optimization():
-    """Сетка оптимизации текстуры."""
+def _compute_texture_case(args: Tuple) -> CaseResult:
+    """
+    Воркер для параллельного расчёта одной конфигурации текстуры.
+
+    Функция на уровне модуля для совместимости с ProcessPoolExecutor (pickle).
+    """
+    Fn, h_star, pattern, phi_min, phi_max = args
+    sector_name = 'full' if phi_max - phi_min > 6 else 'partial'
+
+    base_config = create_config(c=BASE_C, mu=BASE_MU)
+
+    tex_params = TextureParams(
+        a=0.5e-3,
+        b=0.5e-3,
+        h_star=h_star,
+        Fn=Fn,
+        pattern=pattern,
+        phi_min=phi_min,
+        phi_max=phi_max,
+    )
+
+    # Предварительная проверка валидности
+    test_model = TexturedFilmModel(base_config, tex_params)
+    if not test_model.is_valid:
+        return CaseResult(
+            name=f"Fn{Fn}_h{h_star}_{pattern}_{sector_name}",
+            epsilon=0, phi0_deg=0, W=0, p_max=0, h_min=0,
+            Q=0, f=0, P_loss=0, is_valid=False,
+            Fn=Fn, h_star=h_star, pattern=pattern,
+        )
+
+    factory = create_texture_factory(tex_params)
+
+    result = compute_case(
+        name=f"Fn{Fn}_h{h_star}_{pattern}_{sector_name}",
+        base_config=base_config,
+        film_model_factory=factory,
+        compute_dynamics=False,  # Для скорости
+        tex_params=tex_params,
+    )
+    return result
+
+
+def run_block3_texture_optimization(parallel: bool = True, max_workers: int = None):
+    """
+    Сетка оптимизации текстуры.
+
+    Args:
+        parallel: использовать параллельные вычисления (по умолчанию True)
+        max_workers: количество процессов (по умолчанию cpu_count - 1)
+    """
     print("\n" + "=" * 70)
     print("БЛОК 3: Оптимизация текстуры")
     print("=" * 70)
 
-    base_config = create_config(c=BASE_C, mu=BASE_MU)
-    results = []
-
-    total = len(FN_VALUES) * len(H_STAR_VALUES) * len(PATTERN_VALUES) * len(SECTOR_VALUES)
-    count = 0
-
+    # Формируем список задач
+    tasks = []
     for Fn in FN_VALUES:
         for h_star in H_STAR_VALUES:
             for pattern in PATTERN_VALUES:
                 for phi_min, phi_max in SECTOR_VALUES:
-                    count += 1
-                    sector_name = 'full' if phi_max - phi_min > 6 else 'partial'
+                    tasks.append((Fn, h_star, pattern, phi_min, phi_max))
 
-                    tex_params = TextureParams(
-                        a=0.5e-3,
-                        b=0.5e-3,
-                        h_star=h_star,
-                        Fn=Fn,
-                        pattern=pattern,
-                        phi_min=phi_min,
-                        phi_max=phi_max,
-                    )
+    total = len(tasks)
+    print(f"Всего конфигураций: {total}")
 
-                    # Предварительная проверка валидности
-                    test_model = TexturedFilmModel(base_config, tex_params)
-                    if not test_model.is_valid:
-                        results.append(CaseResult(
-                            name=f"Fn{Fn}_h{h_star}_{pattern}_{sector_name}",
-                            epsilon=0, phi0_deg=0, W=0, p_max=0, h_min=0,
-                            Q=0, f=0, P_loss=0, is_valid=False,
-                            Fn=Fn, h_star=h_star, pattern=pattern,
-                        ))
-                        continue
+    if parallel:
+        # Параллельное выполнение
+        n_workers = max_workers or max(1, multiprocessing.cpu_count() - 1)
+        print(f"Параллельный режим: {n_workers} процессов")
 
-                    factory = create_texture_factory(tex_params)
+        results = []
+        with ProcessPoolExecutor(max_workers=n_workers) as executor:
+            # Запускаем все задачи
+            future_to_task = {executor.submit(_compute_texture_case, task): task for task in tasks}
 
-                    result = compute_case(
-                        name=f"Fn{Fn}_h{h_star}_{pattern}_{sector_name}",
-                        base_config=base_config,
-                        film_model_factory=factory,
-                        compute_dynamics=False,  # Для скорости
-                        tex_params=tex_params,
-                    )
+            # Собираем результаты по мере готовности
+            for i, future in enumerate(as_completed(future_to_task), 1):
+                task = future_to_task[future]
+                try:
+                    result = future.result()
                     results.append(result)
-
-                    if count % 10 == 0:
-                        print(f"  [{count}/{total}] Fn={Fn:.0%}, h*={h_star}, "
-                              f"{pattern}, {sector_name}: "
-                              f"valid={result.is_valid}, P_loss={result.P_loss:.1f} Вт")
+                    if i % 10 == 0 or i == total:
+                        print(f"  [{i}/{total}] завершено")
+                except Exception as e:
+                    Fn, h_star, pattern, phi_min, phi_max = task
+                    sector_name = 'full' if phi_max - phi_min > 6 else 'partial'
+                    print(f"  ОШИБКА: Fn={Fn}, h*={h_star}, {pattern}, {sector_name}: {e}")
+                    results.append(CaseResult(
+                        name=f"Fn{Fn}_h{h_star}_{pattern}_{sector_name}",
+                        epsilon=0, phi0_deg=0, W=0, p_max=0, h_min=0,
+                        Q=0, f=0, P_loss=0, is_valid=False,
+                        Fn=Fn, h_star=h_star, pattern=pattern,
+                    ))
+    else:
+        # Последовательное выполнение (для отладки)
+        print("Последовательный режим")
+        results = []
+        for i, task in enumerate(tasks, 1):
+            result = _compute_texture_case(task)
+            results.append(result)
+            if i % 10 == 0:
+                Fn, h_star, pattern, _, _ = task
+                print(f"  [{i}/{total}] Fn={Fn:.0%}, h*={h_star}, {pattern}: "
+                      f"valid={result.is_valid}, P_loss={result.P_loss:.1f} Вт")
 
     # Сохраняем
     df = pd.DataFrame([{
