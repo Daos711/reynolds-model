@@ -358,3 +358,68 @@ class TexturedFilmModel(FilmModel):
         S_cell = np.pi * self.params.a * self.params.b
         S_total = 2 * np.pi * self.config.R * self.config.L
         return self.N_cells * S_cell / S_total
+
+    def texture_mask(self, phi: np.ndarray, Z: np.ndarray) -> np.ndarray:
+        """
+        Вычислить маску текстуры: True внутри лунки, False вне.
+
+        Args:
+            phi: углы сетки, shape (n_phi,)
+            Z: осевые координаты [-1, 1], shape (n_z,)
+
+        Returns:
+            mask: булева маска, shape (n_phi, n_z)
+        """
+        return _compute_texture_mask_numba(
+            phi, Z,
+            self.centers_phi, self.centers_z,
+            self.config.R, self.config.L,
+            self.params.a, self.params.b
+        )
+
+
+@njit(cache=True)
+def _compute_texture_mask_numba(
+    phi: np.ndarray,
+    Z: np.ndarray,
+    centers_phi: np.ndarray,
+    centers_z: np.ndarray,
+    R: float,
+    L: float,
+    a: float,
+    b: float
+) -> np.ndarray:
+    """
+    Вычислить маску текстуры (Numba-ускорено).
+
+    Точка внутри лунки, если r² = (Δφ·R/b)² + (Δz/a)² <= 1
+
+    Returns:
+        mask: булева маска, shape (n_phi, n_z)
+    """
+    n_phi = len(phi)
+    n_z = len(Z)
+    N = len(centers_phi)
+
+    mask = np.zeros((n_phi, n_z), dtype=np.bool_)
+
+    for i in range(n_phi):
+        for j in range(n_z):
+            # Размерная z-координата текущей точки
+            z_dim = Z[j] * (L / 2)
+
+            for k in range(N):
+                # Разность углов с учётом периодичности
+                d_phi = _wrap_to_pi(phi[i] - centers_phi[k])
+
+                # Разность по z (размерная)
+                d_z = z_dim - centers_z[k]
+
+                # Нормированное расстояние до центра лунки
+                r_sq = (d_phi * R / b)**2 + (d_z / a)**2
+
+                if r_sq <= 1.0:
+                    mask[i, j] = True
+                    break  # Уже внутри какой-то лунки
+
+    return mask

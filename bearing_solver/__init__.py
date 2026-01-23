@@ -47,8 +47,17 @@ from .texture import (
     generate_regular_centers,
     generate_phyllotaxis_centers,
 )
+from .roughness import (
+    RoughnessParams,
+    RoughnessResult,
+    sigma_from_Ra,
+    combined_sigma,
+    build_Ra_bushing_field,
+    flow_factors_PC,
+    compute_roughness_fields,
+)
 
-__version__ = "0.6.0"
+__version__ = "0.7.0"
 
 __all__ = [
     # Конфигурация
@@ -95,4 +104,12 @@ __all__ = [
     "TexturedFilmModel",
     "generate_regular_centers",
     "generate_phyllotaxis_centers",
+    # Этап 7: Шероховатость
+    "RoughnessParams",
+    "RoughnessResult",
+    "sigma_from_Ra",
+    "combined_sigma",
+    "build_Ra_bushing_field",
+    "flow_factors_PC",
+    "compute_roughness_fields",
 ]

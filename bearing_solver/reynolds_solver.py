@@ -52,6 +52,14 @@ class ReynoldsResult:
     iterations: int
     residual: float
 
+    # Шероховатость (опционально)
+    use_roughness: bool = False
+    phi_x: Optional[np.ndarray] = None   # flow factor по φ
+    phi_z: Optional[np.ndarray] = None   # flow factor по Z
+    sigma_star: Optional[np.ndarray] = None  # безразмерная шероховатость σ*
+    lambda_field: Optional[np.ndarray] = None  # λ = H/σ*
+    frac_lambda_lt_1: float = 0.0  # доля узлов с λ < 1
+
     def get_dimensional_pressure(self, config: BearingConfig) -> np.ndarray:
         """Получить размерное поле давления, Па."""
         return self.P * config.pressure_scale
@@ -60,6 +68,35 @@ class ReynoldsResult:
 # ============================================================================
 # Numba-ускоренные функции для SOR
 # ============================================================================
+
+@njit(cache=True)
+def _precompute_coeff_halves(coeff: np.ndarray, n_phi: int, n_z: int):
+    """
+    Предвычислить коэффициенты на полуцелых узлах.
+
+    coeff = φ_x·H³ или φ_z·H³ или просто H³
+
+    Returns:
+        coeff_phi_plus, coeff_phi_minus, coeff_z_plus, coeff_z_minus
+    """
+    coeff_phi_plus = np.zeros((n_phi, n_z))
+    coeff_phi_minus = np.zeros((n_phi, n_z))
+    coeff_z_plus = np.zeros((n_phi, n_z))
+    coeff_z_minus = np.zeros((n_phi, n_z))
+
+    for i in range(n_phi):
+        i_plus = (i + 1) % n_phi
+        i_minus = (i - 1 + n_phi) % n_phi
+        for j in range(n_z):
+            coeff_phi_plus[i, j] = 0.5 * (coeff[i, j] + coeff[i_plus, j])
+            coeff_phi_minus[i, j] = 0.5 * (coeff[i, j] + coeff[i_minus, j])
+            if j < n_z - 1:
+                coeff_z_plus[i, j] = 0.5 * (coeff[i, j] + coeff[i, j + 1])
+            if j > 0:
+                coeff_z_minus[i, j] = 0.5 * (coeff[i, j] + coeff[i, j - 1])
+
+    return coeff_phi_plus, coeff_phi_minus, coeff_z_plus, coeff_z_minus
+
 
 @njit(cache=True)
 def _precompute_H3_halves(H3: np.ndarray, n_phi: int, n_z: int):
@@ -263,6 +300,122 @@ def _solve_sor_numba(
     return P, converged, iterations, residual
 
 
+@njit(cache=True)
+def _sor_iteration_with_flow_factors(
+    P: np.ndarray,
+    rhs: np.ndarray,
+    coeff_phi_plus: np.ndarray,
+    coeff_phi_minus: np.ndarray,
+    coeff_z_plus: np.ndarray,
+    coeff_z_minus: np.ndarray,
+    a_phi: float,
+    a_z: float,
+    omega: float,
+    n_phi: int,
+    n_z: int
+) -> float:
+    """
+    Одна итерация SOR с flow factors.
+
+    Уравнение: ∂/∂φ(coeff_φ·∂P/∂φ) + (D/L)²·∂/∂Z(coeff_z·∂P/∂Z) = rhs
+    где coeff_φ = φ_x·H³, coeff_z = φ_z·H³
+    """
+    max_change = 0.0
+
+    for i in range(n_phi):
+        i_plus = (i + 1) % n_phi
+        i_minus = (i - 1 + n_phi) % n_phi
+
+        for j in range(1, n_z - 1):
+            c_i_plus = a_phi * coeff_phi_plus[i, j]
+            c_i_minus = a_phi * coeff_phi_minus[i, j]
+            c_j_plus = a_z * coeff_z_plus[i, j]
+            c_j_minus = a_z * coeff_z_minus[i, j]
+            c_center = c_i_plus + c_i_minus + c_j_plus + c_j_minus
+
+            if c_center < 1e-15:
+                continue
+
+            P_sum = (c_i_plus * P[i_plus, j] +
+                     c_i_minus * P[i_minus, j] +
+                     c_j_plus * P[i, j + 1] +
+                     c_j_minus * P[i, j - 1])
+
+            P_new = (P_sum - rhs[i, j]) / c_center
+            P_new = P[i, j] + omega * (P_new - P[i, j])
+
+            if P_new < 0.0:
+                P_new = 0.0
+
+            change = abs(P_new - P[i, j])
+            if change > max_change:
+                max_change = change
+
+            P[i, j] = P_new
+
+    return max_change
+
+
+@njit(cache=True)
+def _solve_sor_with_flow_factors(
+    H: np.ndarray,
+    phi_x: np.ndarray,
+    phi_z: np.ndarray,
+    rhs: np.ndarray,
+    d_phi: float,
+    d_Z: float,
+    D_L_sq: float,
+    n_phi: int,
+    n_z: int,
+    omega: float,
+    max_iter: int,
+    min_iter: int,
+    tol: float
+) -> tuple:
+    """
+    Решение SOR с flow factors (Patir-Cheng).
+
+    Уравнение:
+        ∂/∂φ(φ_x·H³·∂P/∂φ) + (D/L)²·∂/∂Z(φ_z·H³·∂P/∂Z) = rhs
+    """
+    P = np.zeros((n_phi, n_z))
+    H3 = H ** 3
+
+    # Коэффициенты с flow factors
+    coeff_phi = phi_x * H3  # φ_x·H³
+    coeff_z = phi_z * H3    # φ_z·H³
+
+    a_phi = 1.0 / (d_phi ** 2)
+    a_z = D_L_sq / (d_Z ** 2)
+
+    # Предвычисляем на полуцелых узлах
+    coeff_phi_plus, coeff_phi_minus, _, _ = _precompute_coeff_halves(coeff_phi, n_phi, n_z)
+    _, _, coeff_z_plus, coeff_z_minus = _precompute_coeff_halves(coeff_z, n_phi, n_z)
+
+    converged = False
+    iterations = 0
+
+    for iteration in range(max_iter):
+        max_change = _sor_iteration_with_flow_factors(
+            P, rhs,
+            coeff_phi_plus, coeff_phi_minus,
+            coeff_z_plus, coeff_z_minus,
+            a_phi, a_z, omega,
+            n_phi, n_z
+        )
+
+        iterations = iteration + 1
+
+        if iteration >= min_iter and max_change < tol:
+            converged = True
+            break
+
+    # Невязка (упрощённо)
+    residual = max_change
+
+    return P, converged, iterations, residual
+
+
 # ============================================================================
 # Основной класс решателя
 # ============================================================================
@@ -274,6 +427,7 @@ class ReynoldsSolver:
     Поддерживает:
     - SOR-итерации с Numba-ускорением (по умолчанию)
     - Кавитация через условие P ≥ 0
+    - Шероховатость Patir-Cheng через flow factors (опционально)
     """
 
     def __init__(
@@ -295,7 +449,15 @@ class ReynoldsSolver:
         self.min_iter = 100       # минимум итераций
         self.tol = 1e-8           # допуск сходимости
 
-    def solve(self, dH_dt_star: Optional[np.ndarray] = None) -> ReynoldsResult:
+    def solve(
+        self,
+        dH_dt_star: Optional[np.ndarray] = None,
+        phi_x: Optional[np.ndarray] = None,
+        phi_z: Optional[np.ndarray] = None,
+        sigma_star: Optional[np.ndarray] = None,
+        lambda_field: Optional[np.ndarray] = None,
+        frac_lambda_lt_1: float = 0.0
+    ) -> ReynoldsResult:
         """
         Решить уравнение Рейнольдса.
 
@@ -304,6 +466,11 @@ class ReynoldsSolver:
                         (squeeze-член для расчёта демпфирования).
                         Если задано, RHS = ∂H/∂φ + 2·∂H/∂t*
                         Формула: dH_dt_star = vx*·cos(φ) + vy*·sin(φ)
+            phi_x: flow factor по φ (Patir-Cheng), shape (n_phi, n_z)
+            phi_z: flow factor по Z (Patir-Cheng), shape (n_phi, n_z)
+            sigma_star: безразмерная шероховатость σ* (для отчёта)
+            lambda_field: параметр плёнки λ = H/σ* (для отчёта)
+            frac_lambda_lt_1: доля узлов с λ < 1 (для отчёта)
 
         Returns:
             ReynoldsResult с полями давления и толщины плёнки
@@ -325,12 +492,23 @@ class ReynoldsSolver:
         # Параметр (D/L)²
         D_L_sq = self.config.D_L_ratio ** 2
 
-        # Решаем SOR с Numba
-        P, converged, iterations, residual = _solve_sor_numba(
-            H, rhs, d_phi, d_Z, D_L_sq,
-            n_phi, n_z,
-            self.omega_sor, self.max_iter, self.min_iter, self.tol
-        )
+        # Определяем, используем ли шероховатость
+        use_roughness = phi_x is not None and phi_z is not None
+
+        if use_roughness:
+            # Решаем с flow factors
+            P, converged, iterations, residual = _solve_sor_with_flow_factors(
+                H, phi_x, phi_z, rhs, d_phi, d_Z, D_L_sq,
+                n_phi, n_z,
+                self.omega_sor, self.max_iter, self.min_iter, self.tol
+            )
+        else:
+            # Стандартное решение без шероховатости
+            P, converged, iterations, residual = _solve_sor_numba(
+                H, rhs, d_phi, d_Z, D_L_sq,
+                n_phi, n_z,
+                self.omega_sor, self.max_iter, self.min_iter, self.tol
+            )
 
         # Применяем условие кавитации (на всякий случай)
         P = np.maximum(P, 0.0)
@@ -353,6 +531,12 @@ class ReynoldsSolver:
             converged=converged,
             iterations=iterations,
             residual=residual,
+            use_roughness=use_roughness,
+            phi_x=phi_x,
+            phi_z=phi_z,
+            sigma_star=sigma_star,
+            lambda_field=lambda_field,
+            frac_lambda_lt_1=frac_lambda_lt_1,
         )
 
 
@@ -360,6 +544,11 @@ def solve_reynolds(
     config: BearingConfig,
     film_model: Optional[FilmModel] = None,
     dH_dt_star: Optional[np.ndarray] = None,
+    phi_x: Optional[np.ndarray] = None,
+    phi_z: Optional[np.ndarray] = None,
+    sigma_star: Optional[np.ndarray] = None,
+    lambda_field: Optional[np.ndarray] = None,
+    frac_lambda_lt_1: float = 0.0,
 ) -> ReynoldsResult:
     """
     Удобная функция для решения уравнения Рейнольдса.
@@ -369,9 +558,21 @@ def solve_reynolds(
         film_model: модель толщины плёнки
         dH_dt_star: безразмерная скорость изменения толщины плёнки
                     (squeeze-член для расчёта демпфирования)
+        phi_x: flow factor по φ (Patir-Cheng)
+        phi_z: flow factor по Z (Patir-Cheng)
+        sigma_star: безразмерная шероховатость σ*
+        lambda_field: параметр плёнки λ = H/σ*
+        frac_lambda_lt_1: доля узлов с λ < 1
 
     Returns:
         ReynoldsResult
     """
     solver = ReynoldsSolver(config, film_model)
-    return solver.solve(dH_dt_star=dH_dt_star)
+    return solver.solve(
+        dH_dt_star=dH_dt_star,
+        phi_x=phi_x,
+        phi_z=phi_z,
+        sigma_star=sigma_star,
+        lambda_field=lambda_field,
+        frac_lambda_lt_1=frac_lambda_lt_1,
+    )
