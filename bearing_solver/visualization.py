@@ -3,6 +3,7 @@
 """
 
 from typing import Optional
+from pathlib import Path
 import numpy as np
 
 from .config import BearingConfig
@@ -32,7 +33,7 @@ def plot_pressure_field(
     import matplotlib.pyplot as plt
 
     if ax is None:
-        fig, ax = plt.subplots(figsize=(12, 5))
+        fig, ax = plt.subplots(figsize=(10, 4))
 
     PHI, Z = np.meshgrid(result.phi, result.Z, indexing='ij')
     phi_deg = np.degrees(PHI)
@@ -69,21 +70,11 @@ def plot_film_thickness(
 ):
     """
     Построить контурную карту толщины плёнки.
-
-    Args:
-        result: результат решения
-        config: конфигурация подшипника
-        ax: оси matplotlib
-        dimensional: True для размерной толщины (мкм)
-        title: заголовок графика
-
-    Returns:
-        ax: оси matplotlib
     """
     import matplotlib.pyplot as plt
 
     if ax is None:
-        fig, ax = plt.subplots(figsize=(12, 5))
+        fig, ax = plt.subplots(figsize=(10, 4))
 
     PHI, Z = np.meshgrid(result.phi, result.Z, indexing='ij')
     phi_deg = np.degrees(PHI)
@@ -116,17 +107,6 @@ def plot_pressure_profile(
 ):
     """
     Построить профиль давления вдоль окружности при фиксированном Z.
-
-    Args:
-        result: результат решения
-        config: конфигурация подшипника
-        z_index: индекс по Z (по умолчанию — середина)
-        ax: оси matplotlib
-        dimensional: True для размерного давления
-        title: заголовок графика
-
-    Returns:
-        ax: оси matplotlib
     """
     import matplotlib.pyplot as plt
 
@@ -162,7 +142,12 @@ def plot_pressure_profile(
     return ax
 
 
-def plot_summary(result: ReynoldsResult, config: BearingConfig, save_path: Optional[str] = None):
+def plot_summary(
+    result: ReynoldsResult,
+    config: BearingConfig,
+    save_path: Optional[str] = None,
+    show_info: bool = True
+):
     """
     Построить сводную диаграмму с несколькими графиками.
 
@@ -170,6 +155,7 @@ def plot_summary(result: ReynoldsResult, config: BearingConfig, save_path: Optio
         result: результат решения
         config: конфигурация подшипника
         save_path: путь для сохранения (опционально)
+        show_info: показывать информационную панель
     """
     import matplotlib.pyplot as plt
 
@@ -186,8 +172,8 @@ def plot_summary(result: ReynoldsResult, config: BearingConfig, save_path: Optio
 
     # Информация о расчёте
     axes[1, 1].axis('off')
-    info_text = f"""
-ПАРАМЕТРЫ ПОДШИПНИКА:
+    if show_info:
+        info_text = f"""ПАРАМЕТРЫ ПОДШИПНИКА:
   Радиус R = {config.R*1000:.1f} мм
   Длина L = {config.L*1000:.1f} мм
   Зазор c = {config.c*1e6:.1f} мкм
@@ -206,46 +192,16 @@ def plot_summary(result: ReynoldsResult, config: BearingConfig, save_path: Optio
 СЕТКА: {config.n_phi} × {config.n_z}
 Сходимость: {"Да" if result.converged else "Нет"}
 Итераций: {result.iterations}
-"""
-    axes[1, 1].text(0.1, 0.5, info_text, transform=axes[1, 1].transAxes,
-                    fontsize=10, verticalalignment='center', fontfamily='monospace')
+Невязка: {result.residual:.2e}"""
+        axes[1, 1].text(0.1, 0.5, info_text, transform=axes[1, 1].transAxes,
+                        fontsize=10, verticalalignment='center', fontfamily='monospace')
 
     plt.tight_layout()
 
     if save_path:
+        # Создаём директорию если не существует
+        Path(save_path).parent.mkdir(parents=True, exist_ok=True)
         plt.savefig(save_path, dpi=150, bbox_inches='tight')
         print(f"Сохранено: {save_path}")
 
     return fig
-
-
-def plot_3d_pressure(result: ReynoldsResult, config: BearingConfig, ax=None):
-    """
-    3D-визуализация поля давления.
-
-    Args:
-        result: результат решения
-        config: конфигурация подшипника
-        ax: 3D-оси matplotlib
-
-    Returns:
-        ax: 3D-оси matplotlib
-    """
-    import matplotlib.pyplot as plt
-    from mpl_toolkits.mplot3d import Axes3D
-
-    if ax is None:
-        fig = plt.figure(figsize=(12, 8))
-        ax = fig.add_subplot(111, projection='3d')
-
-    PHI, Z = np.meshgrid(result.phi, result.Z, indexing='ij')
-    phi_deg = np.degrees(PHI)
-    P_mpa = result.P * config.pressure_scale / 1e6
-
-    surf = ax.plot_surface(phi_deg, Z, P_mpa, cmap='jet', alpha=0.9)
-    ax.set_xlabel("φ, град")
-    ax.set_ylabel("Z")
-    ax.set_zlabel("p, МПа")
-    ax.set_title("3D поле давления")
-
-    return ax
