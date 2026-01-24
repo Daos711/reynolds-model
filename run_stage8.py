@@ -511,8 +511,7 @@ def run_block3_texture_optimization(parallel: bool = True, max_workers: int = No
 
     if parallel:
         # Параллельное выполнение
-        # Ограничиваем число воркеров: слишком много = Numba перекомпиляция в каждом
-        n_workers = max_workers or min(8, max(1, multiprocessing.cpu_count() - 1))
+        n_workers = max_workers or max(1, multiprocessing.cpu_count() - 1)
         print(f"Параллельный режим: {n_workers} процессов")
 
         results = []
