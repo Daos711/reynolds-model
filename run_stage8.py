@@ -193,6 +193,7 @@ def compute_case(
         )
     except Exception as e:
         # Если не сходится — возвращаем невалидный результат
+        print(f"  [WARN] find_equilibrium failed for {name}: {type(e).__name__}: {e}")
         return CaseResult(
             name=name, epsilon=0.99, phi0_deg=0, W=0, p_max=0, h_min=0,
             Q=0, f=0, P_loss=0, is_valid=False,
@@ -775,11 +776,103 @@ def run_block6_summary():
 # MAIN
 # ============================================================================
 
-def main():
+def run_diagnostic_test():
+    """
+    Диагностический тест: один расчёт как в Stage 7.
+    Если тут работает, а в БЛОК 1 нет — проблема в обвязке.
+    """
+    print("\n" + "=" * 70)
+    print("ДИАГНОСТИКА: Тест одной точки (как Stage 7)")
+    print("=" * 70)
+
+    from bearing_solver import compute_stage2
+
+    # Параметры как в Stage 7
+    config = BearingConfig(
+        R=0.050,
+        L=0.050,
+        c=50e-6,
+        epsilon=0.6,
+        phi0=np.radians(45),
+        n_rpm=3000,
+        mu=0.04,  # как в Stage 7
+        n_phi=180,
+        n_z=50,
+    )
+
+    print(f"Конфиг: R={config.R}, L={config.L}, c={config.c*1e6:.0f} мкм")
+    print(f"        ε={config.epsilon}, φ₀={np.degrees(config.phi0):.1f}°")
+    print(f"        n={config.n_rpm} об/мин, μ={config.mu} Па·с")
+
+    # 1) Гладкая модель без равновесия
+    print("\n--- Тест 1: Гладкая модель (без равновесия) ---")
+    film_model = SmoothFilmModel(config)
+    reynolds = solve_reynolds(config, film_model)
+    forces = compute_forces(reynolds, config)
+
+    print(f"  p: max={reynolds.p_max/1e6:.2f} МПа, h_min={reynolds.h_min*1e6:.2f} мкм")
+    print(f"  W = {forces.W/1000:.2f} кН")
+
+    if reynolds.p_max < 1e3:
+        print("  [ОШИБКА] p_max слишком мал! Solver не работает.")
+        return False
+
+    # 2) Равновесие для гладкой модели
+    print("\n--- Тест 2: Гладкая модель + find_equilibrium ---")
+    W_ext = 50e3  # 50 кН
+
+    try:
+        eq = find_equilibrium(
+            config, W_ext=W_ext, load_angle=-np.pi/2,
+            verbose=True, film_model_factory=smooth_factory
+        )
+        print(f"  Равновесие найдено: ε={eq.epsilon:.4f}, φ₀={np.degrees(eq.phi0):.1f}°")
+        print(f"  W_achieved = {eq.W_achieved/1000:.2f} кН (цель: {W_ext/1000:.0f} кН)")
+        print(f"  residual_vec = {eq.residual_vec*100:.2f}%")
+    except Exception as e:
+        print(f"  [ОШИБКА] Exception: {type(e).__name__}: {e}")
+        import traceback
+        traceback.print_exc()
+        return False
+
+    # 3) С параметрами Stage 8
+    print("\n--- Тест 3: Параметры Stage 8 (μ=0.057) ---")
+    config_s8 = create_config(c=BASE_C, mu=BASE_MU)
+    print(f"  c={config_s8.c*1e6:.0f} мкм, μ={config_s8.mu} Па·с")
+
+    try:
+        eq_s8 = find_equilibrium(
+            config_s8, W_ext=BASE_W_EXT, load_angle=-np.pi/2,
+            verbose=True, film_model_factory=smooth_factory
+        )
+        print(f"  Равновесие Stage8: ε={eq_s8.epsilon:.4f}, W={eq_s8.W_achieved/1000:.2f} кН")
+    except Exception as e:
+        print(f"  [ОШИБКА] Exception: {type(e).__name__}: {e}")
+        import traceback
+        traceback.print_exc()
+        return False
+
+    print("\n[OK] Диагностика пройдена — solver работает!")
+    return True
+
+
+def main(run_diagnostics: bool = False):
+    """
+    Запуск этапа 8.
+
+    Args:
+        run_diagnostics: запустить диагностический тест перед основным расчётом
+    """
     print("ЭТАП 8: Параметрические исследования и оптимизация текстуры")
     print("=" * 70)
 
     OUT_DIR.mkdir(parents=True, exist_ok=True)
+
+    # Диагностика (опционально)
+    if run_diagnostics:
+        if not run_diagnostic_test():
+            print("\n[КРИТИЧЕСКАЯ ОШИБКА] Диагностика не пройдена!")
+            return
 
     # БЛОК 1
     four_modes = run_block1_four_modes()
@@ -806,4 +899,6 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    import sys
+    run_diag = '--diag' in sys.argv or '--diagnostics' in sys.argv
+    main(run_diagnostics=run_diag)
