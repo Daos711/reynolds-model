@@ -438,6 +438,63 @@ def run_block2_clearance_sweep():
 # БЛОК 3: Оптимизация текстуры (ПАРАЛЛЕЛЬНО)
 # ============================================================================
 
+def _compute_texture_case_fast(args: Tuple) -> CaseResult:
+    """
+    БЫСТРЫЙ воркер: использует фиксированное ε вместо find_equilibrium.
+
+    Идея: текстура слабо влияет на положение равновесия, поэтому
+    используем ε от гладкого подшипника и сравниваем только p_max, P_loss.
+    """
+    Fn, h_star, pattern, phi_min, phi_max, base_epsilon, base_phi0 = args
+    sector_name = 'full' if phi_max - phi_min > 6 else 'partial'
+
+    tex_params = TextureParams(
+        a=0.5e-3,
+        b=0.5e-3,
+        h_star=h_star,
+        Fn=Fn,
+        pattern=pattern,
+        phi_min=phi_min,
+        phi_max=phi_max,
+    )
+
+    # Конфиг с фиксированным ε (от гладкого подшипника)
+    config = BearingConfig(
+        R=BASE_R, L=BASE_L, c=BASE_C,
+        epsilon=base_epsilon, phi0=base_phi0,
+        n_rpm=BASE_N_RPM, mu=BASE_MU,
+        n_phi=180, n_z=50
+    )
+
+    # Проверка валидности текстуры
+    film_model = TexturedFilmModel(config, tex_params)
+    if not film_model.is_valid:
+        return CaseResult(
+            name=f"Fn{Fn}_h{h_star}_{pattern}_{sector_name}",
+            epsilon=base_epsilon, phi0_deg=np.degrees(base_phi0),
+            W=0, p_max=0, h_min=0, Q=0, f=0, P_loss=0,
+            is_valid=False, Fn=Fn, h_star=h_star, pattern=pattern,
+        )
+
+    # Один вызов solver (без итераций!)
+    reynolds = solve_reynolds(config, film_model)
+    stage2 = compute_stage2(reynolds, config)
+
+    return CaseResult(
+        name=f"Fn{Fn}_h{h_star}_{pattern}_{sector_name}",
+        epsilon=base_epsilon,
+        phi0_deg=np.degrees(base_phi0),
+        W=stage2.forces.W,
+        p_max=reynolds.p_max,
+        h_min=reynolds.h_min,
+        Q=stage2.flow.Q_total,
+        f=stage2.friction.mu_friction,
+        P_loss=stage2.losses.P_friction,
+        is_valid=True,
+        Fn=Fn, h_star=h_star, pattern=pattern,
+    )
+
+
 def _compute_texture_case(args: Tuple) -> CaseResult:
     """
     Воркер для параллельного расчёта одной конфигурации текстуры.
@@ -481,17 +538,33 @@ def _compute_texture_case(args: Tuple) -> CaseResult:
     return result
 
 
-def run_block3_texture_optimization(parallel: bool = True, max_workers: int = None):
+def run_block3_texture_optimization(parallel: bool = True, max_workers: int = None, fast_mode: bool = True):
     """
     Сетка оптимизации текстуры.
 
     Args:
         parallel: использовать параллельные вычисления (по умолчанию True)
-        max_workers: количество процессов (по умолчанию min(8, cpu_count - 1))
+        max_workers: количество процессов (по умолчанию cpu_count - 1)
+        fast_mode: использовать фиксированное ε вместо find_equilibrium (в 30 раз быстрее)
     """
     print("\n" + "=" * 70)
     print("БЛОК 3: Оптимизация текстуры")
     print("=" * 70)
+
+    # В fast_mode сначала находим ε для гладкого подшипника
+    base_epsilon = 0.6
+    base_phi0 = np.radians(135)
+
+    if fast_mode:
+        print("  Быстрый режим: поиск базового ε...")
+        base_config = create_config(c=BASE_C, mu=BASE_MU)
+        eq = find_equilibrium(
+            base_config, W_ext=BASE_W_EXT, load_angle=-np.pi/2,
+            verbose=False, film_model_factory=smooth_factory
+        )
+        base_epsilon = eq.epsilon
+        base_phi0 = eq.phi0
+        print(f"  Базовое ε = {base_epsilon:.4f}, φ₀ = {np.degrees(base_phi0):.1f}°")
 
     # Формируем список задач
     tasks = []
@@ -499,14 +572,20 @@ def run_block3_texture_optimization(parallel: bool = True, max_workers: int = No
         for h_star in H_STAR_VALUES:
             for pattern in PATTERN_VALUES:
                 for phi_min, phi_max in SECTOR_VALUES:
-                    tasks.append((Fn, h_star, pattern, phi_min, phi_max))
+                    if fast_mode:
+                        tasks.append((Fn, h_star, pattern, phi_min, phi_max, base_epsilon, base_phi0))
+                    else:
+                        tasks.append((Fn, h_star, pattern, phi_min, phi_max))
 
     total = len(tasks)
     print(f"Всего конфигураций: {total}")
 
-    # Прогрев Numba JIT (один расчёт в главном процессе для кэширования)
+    # Выбираем воркер
+    worker_fn = _compute_texture_case_fast if fast_mode else _compute_texture_case
+
+    # Прогрев Numba JIT
     print("  Прогрев Numba JIT...")
-    _ = _compute_texture_case(tasks[0])
+    _ = worker_fn(tasks[0])
     print("  Прогрев завершён")
 
     if parallel:
@@ -517,7 +596,7 @@ def run_block3_texture_optimization(parallel: bool = True, max_workers: int = No
         results = []
         with ProcessPoolExecutor(max_workers=n_workers) as executor:
             # Запускаем все задачи
-            future_to_task = {executor.submit(_compute_texture_case, task): task for task in tasks}
+            future_to_task = {executor.submit(worker_fn, task): task for task in tasks}
 
             # Собираем результаты по мере готовности
             for i, future in enumerate(as_completed(future_to_task), 1):
@@ -553,7 +632,7 @@ def run_block3_texture_optimization(parallel: bool = True, max_workers: int = No
         print("Последовательный режим")
         results = []
         for i, task in enumerate(tasks, 1):
-            result = _compute_texture_case(task)
+            result = worker_fn(task)
             results.append(result)
             if i % 10 == 0:
                 Fn, h_star, pattern, _, _ = task
