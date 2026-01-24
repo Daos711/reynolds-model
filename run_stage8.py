@@ -487,7 +487,7 @@ def run_block3_texture_optimization(parallel: bool = True, max_workers: int = No
 
     Args:
         parallel: использовать параллельные вычисления (по умолчанию True)
-        max_workers: количество процессов (по умолчанию cpu_count - 1)
+        max_workers: количество процессов (по умолчанию min(8, cpu_count - 1))
     """
     print("\n" + "=" * 70)
     print("БЛОК 3: Оптимизация текстуры")
@@ -504,9 +504,15 @@ def run_block3_texture_optimization(parallel: bool = True, max_workers: int = No
     total = len(tasks)
     print(f"Всего конфигураций: {total}")
 
+    # Прогрев Numba JIT (один расчёт в главном процессе для кэширования)
+    print("  Прогрев Numba JIT...")
+    _ = _compute_texture_case(tasks[0])
+    print("  Прогрев завершён")
+
     if parallel:
         # Параллельное выполнение
-        n_workers = max_workers or max(1, multiprocessing.cpu_count() - 1)
+        # Ограничиваем число воркеров: слишком много = Numba перекомпиляция в каждом
+        n_workers = max_workers or min(8, max(1, multiprocessing.cpu_count() - 1))
         print(f"Параллельный режим: {n_workers} процессов")
 
         results = []
@@ -518,10 +524,21 @@ def run_block3_texture_optimization(parallel: bool = True, max_workers: int = No
             for i, future in enumerate(as_completed(future_to_task), 1):
                 task = future_to_task[future]
                 try:
-                    result = future.result()
+                    # Таймаут 60 секунд на одну конфигурацию
+                    result = future.result(timeout=60)
                     results.append(result)
                     if i % 10 == 0 or i == total:
                         print(f"  [{i}/{total}] завершено")
+                except TimeoutError:
+                    Fn, h_star, pattern, phi_min, phi_max = task
+                    sector_name = 'full' if phi_max - phi_min > 6 else 'partial'
+                    print(f"  [TIMEOUT] Fn={Fn}, h*={h_star}, {pattern}, {sector_name}")
+                    results.append(CaseResult(
+                        name=f"Fn{Fn}_h{h_star}_{pattern}_{sector_name}",
+                        epsilon=0, phi0_deg=0, W=0, p_max=0, h_min=0,
+                        Q=0, f=0, P_loss=0, is_valid=False,
+                        Fn=Fn, h_star=h_star, pattern=pattern,
+                    ))
                 except Exception as e:
                     Fn, h_star, pattern, phi_min, phi_max = task
                     sector_name = 'full' if phi_max - phi_min > 6 else 'partial'
