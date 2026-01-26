@@ -764,11 +764,15 @@ def run_block4_pareto(optimization_results: List[CaseResult]):
 # БЛОК 5: Робастность топ-5
 # ============================================================================
 
-def run_block5_robustness(top5: List[CaseResult]):
+def run_block5_robustness(top5: List[CaseResult], skip: bool = True):
     """Робастность топ-5 по c и μ."""
     print("\n" + "=" * 70)
     print("БЛОК 5: Робастность топ-5")
     print("=" * 70)
+
+    if skip:
+        print("  [ПРОПУЩЕН] — используйте run_block5_robustness(top5, skip=False) для полного анализа")
+        return []
 
     if not top5:
         print("Нет топ-5 для анализа робастности!")
