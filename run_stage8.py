@@ -764,69 +764,306 @@ def run_block4_pareto(optimization_results: List[CaseResult]):
 # БЛОК 5: Робастность топ-5
 # ============================================================================
 
-def run_block5_robustness(top5: List[CaseResult], skip: bool = True):
-    """Робастность топ-5 по c и μ."""
+def run_block5_robustness(top5: List[CaseResult], skip: bool = False):
+    """
+    Робастность топ-5 по c и μ (fast_mode).
+
+    Для каждого топ-кандидата и гладкого подшипника:
+    - Sweep по зазору c
+    - Sweep по температуре/вязкости
+    """
     print("\n" + "=" * 70)
     print("БЛОК 5: Робастность топ-5")
     print("=" * 70)
 
     if skip:
-        print("  [ПРОПУЩЕН] — используйте run_block5_robustness(top5, skip=False) для полного анализа")
+        print("  [ПРОПУЩЕН] — используйте skip=False для полного анализа")
         return []
 
     if not top5:
         print("Нет топ-5 для анализа робастности!")
-        return
+        return []
 
-    results = []
+    # Берём топ-3 для анализа
+    candidates = top5[:3]
+    print(f"Анализируем топ-{len(candidates)} кандидатов")
 
-    # Sweep по c для топ-5
-    c_subset = [30e-6, 50e-6, 100e-6, 180e-6]
+    # Sweep параметры
+    c_values = [30e-6, 50e-6, 80e-6, 125e-6, 180e-6]
+    temp_values = [40, 50, 60, 70]  # °C
 
-    for r in top5[:3]:  # Только первые 3 для скорости
-        print(f"\n{r.name}:")
+    results_c = []  # sweep по c
+    results_t = []  # sweep по T
 
-        tex_params = TextureParams(
-            a=0.5e-3,
-            b=0.5e-3,
-            h_star=r.h_star,
-            Fn=r.Fn,
-            pattern=r.pattern,
-        )
+    # =========================================================================
+    # ПРЕДРАСЧЁТ: находим ε для всех значений c и T один раз
+    # =========================================================================
+    print("\n  Предрасчёт ε для всех условий...")
 
-        for c in c_subset:
-            base_config = create_config(c=c, mu=BASE_MU)
-            factory = create_texture_factory(tex_params)
+    eps_by_c = {}  # {c: (epsilon, phi0)}
+    eps_by_T = {}  # {T: (epsilon, phi0)}
 
-            result = compute_case(
-                name=f"{r.name}_c{c*1e6:.0f}",
-                base_config=base_config,
-                film_model_factory=factory,
-                compute_dynamics=True,
-                tex_params=tex_params,
+    for c in c_values:
+        base_config = create_config(c=c, mu=BASE_MU)
+        try:
+            eq = find_equilibrium(
+                base_config, W_ext=BASE_W_EXT, load_angle=-np.pi/2,
+                verbose=False, film_model_factory=smooth_factory
             )
-            result.c = c
-            results.append(result)
+            eps_by_c[c] = (eq.epsilon, eq.phi0)
+        except:
+            pass
 
-            print(f"  c={c*1e6:.0f} мкм: ε={result.epsilon:.4f}, "
-                  f"P_loss={result.P_loss:.1f} Вт, margin={result.margin:.1f} 1/с")
+    for T in temp_values:
+        mu = MU_BY_TEMP[T]
+        base_config = create_config(c=BASE_C, mu=mu)
+        try:
+            eq = find_equilibrium(
+                base_config, W_ext=BASE_W_EXT, load_angle=-np.pi/2,
+                verbose=False, film_model_factory=smooth_factory
+            )
+            eps_by_T[T] = (eq.epsilon, eq.phi0)
+        except:
+            pass
 
-    # Сохраняем
-    if results:
-        df = pd.DataFrame([{
-            'name': r.name,
-            'c_um': r.c*1e6,
-            'epsilon': r.epsilon,
-            'h_min_um': r.h_min*1e6,
-            'p_max_MPa': r.p_max/1e6,
-            'P_loss_W': r.P_loss,
-            'margin': r.margin,
-        } for r in results])
+    print(f"  Найдено: {len(eps_by_c)} по c, {len(eps_by_T)} по T")
 
-        df.to_csv(OUT_DIR / 'robustness_sweep.csv', index=False)
-        print(f"\nCSV сохранён: {OUT_DIR / 'robustness_sweep.csv'}")
+    # =========================================================================
+    # SWEEP ПО ЗАЗОРУ c (при базовой температуре)
+    # =========================================================================
+    print("\n--- Sweep по зазору c ---")
 
-    return results
+    for c in c_values:
+        if c not in eps_by_c:
+            print(f"  c={c*1e6:.0f} мкм: пропуск (нет ε)")
+            continue
+        base_eps, base_phi0 = eps_by_c[c]
+
+        # Гладкий подшипник
+        config_smooth = BearingConfig(
+            R=BASE_R, L=BASE_L, c=c,
+            epsilon=base_eps, phi0=base_phi0,
+            n_rpm=BASE_N_RPM, mu=BASE_MU,
+            n_phi=180, n_z=50
+        )
+        film_smooth = SmoothFilmModel(config_smooth)
+        rey_smooth = solve_reynolds(config_smooth, film_smooth)
+        s2_smooth = compute_stage2(rey_smooth, config_smooth)
+
+        results_c.append({
+            'c_um': c * 1e6,
+            'name': 'Гладкий',
+            'epsilon': base_eps,
+            'h_min_um': rey_smooth.h_min * 1e6,
+            'p_max_MPa': rey_smooth.p_max / 1e6,
+            'P_loss_W': s2_smooth.losses.P_friction,
+            'f': s2_smooth.friction.mu_friction,
+        })
+
+        # Текстурированные кандидаты
+        for cand in candidates:
+            tex_params = TextureParams(
+                a=0.5e-3, b=0.5e-3,
+                h_star=cand.h_star, Fn=cand.Fn, pattern=cand.pattern,
+            )
+            config_tex = BearingConfig(
+                R=BASE_R, L=BASE_L, c=c,
+                epsilon=base_eps, phi0=base_phi0,
+                n_rpm=BASE_N_RPM, mu=BASE_MU,
+                n_phi=180, n_z=50
+            )
+            film_tex = TexturedFilmModel(config_tex, tex_params)
+            if not film_tex.is_valid:
+                continue
+            rey_tex = solve_reynolds(config_tex, film_tex)
+            s2_tex = compute_stage2(rey_tex, config_tex)
+
+            results_c.append({
+                'c_um': c * 1e6,
+                'name': cand.name,
+                'epsilon': base_eps,
+                'h_min_um': rey_tex.h_min * 1e6,
+                'p_max_MPa': rey_tex.p_max / 1e6,
+                'P_loss_W': s2_tex.losses.P_friction,
+                'f': s2_tex.friction.mu_friction,
+            })
+
+        print(f"  c={c*1e6:.0f} мкм: ε={base_eps:.4f}")
+
+    # =========================================================================
+    # SWEEP ПО ТЕМПЕРАТУРЕ T (при базовом зазоре)
+    # =========================================================================
+    print("\n--- Sweep по температуре T ---")
+
+    for T in temp_values:
+        if T not in eps_by_T:
+            print(f"  T={T}°C: пропуск (нет ε)")
+            continue
+        mu = MU_BY_TEMP[T]
+        base_eps, base_phi0 = eps_by_T[T]
+
+        # Гладкий подшипник
+        config_smooth = BearingConfig(
+            R=BASE_R, L=BASE_L, c=BASE_C,
+            epsilon=base_eps, phi0=base_phi0,
+            n_rpm=BASE_N_RPM, mu=mu,
+            n_phi=180, n_z=50
+        )
+        film_smooth = SmoothFilmModel(config_smooth)
+        rey_smooth = solve_reynolds(config_smooth, film_smooth)
+        s2_smooth = compute_stage2(rey_smooth, config_smooth)
+
+        results_t.append({
+            'T_C': T,
+            'mu': mu,
+            'name': 'Гладкий',
+            'epsilon': base_eps,
+            'h_min_um': rey_smooth.h_min * 1e6,
+            'p_max_MPa': rey_smooth.p_max / 1e6,
+            'P_loss_W': s2_smooth.losses.P_friction,
+            'f': s2_smooth.friction.mu_friction,
+        })
+
+        # Текстурированные кандидаты
+        for cand in candidates:
+            tex_params = TextureParams(
+                a=0.5e-3, b=0.5e-3,
+                h_star=cand.h_star, Fn=cand.Fn, pattern=cand.pattern,
+            )
+            config_tex = BearingConfig(
+                R=BASE_R, L=BASE_L, c=BASE_C,
+                epsilon=base_eps, phi0=base_phi0,
+                n_rpm=BASE_N_RPM, mu=mu,
+                n_phi=180, n_z=50
+            )
+            film_tex = TexturedFilmModel(config_tex, tex_params)
+            if not film_tex.is_valid:
+                continue
+            rey_tex = solve_reynolds(config_tex, film_tex)
+            s2_tex = compute_stage2(rey_tex, config_tex)
+
+            results_t.append({
+                'T_C': T,
+                'mu': mu,
+                'name': cand.name,
+                'epsilon': base_eps,
+                'h_min_um': rey_tex.h_min * 1e6,
+                'p_max_MPa': rey_tex.p_max / 1e6,
+                'P_loss_W': s2_tex.losses.P_friction,
+                'f': s2_tex.friction.mu_friction,
+            })
+
+        print(f"  T={T}°C (μ={mu}): ε={base_eps:.4f}")
+
+    # =========================================================================
+    # СОХРАНЕНИЕ РЕЗУЛЬТАТОВ
+    # =========================================================================
+    df_c = pd.DataFrame(results_c)
+    df_t = pd.DataFrame(results_t)
+
+    df_c.to_csv(OUT_DIR / 'robustness_clearance.csv', index=False)
+    df_t.to_csv(OUT_DIR / 'robustness_temperature.csv', index=False)
+    print(f"\nCSV сохранены: robustness_clearance.csv, robustness_temperature.csv")
+
+    # =========================================================================
+    # ИТОГОВАЯ ТАБЛИЦА: ЛУЧШИЙ vs ГЛАДКИЙ
+    # =========================================================================
+    print("\n--- Итоговая таблица: Лучший vs Гладкий ---")
+
+    best_name = candidates[0].name
+
+    # По зазору
+    print("\nПо зазору c:")
+    print(f"{'c, мкм':>8} | {'P_loss Гл':>10} | {'P_loss Тх':>10} | {'ΔP_loss':>8} | {'h_min':>6}")
+    print("-" * 55)
+
+    for c in c_values:
+        c_um = c * 1e6
+        smooth_row = [r for r in results_c if r['c_um'] == c_um and r['name'] == 'Гладкий']
+        tex_row = [r for r in results_c if r['c_um'] == c_um and r['name'] == best_name]
+
+        if smooth_row and tex_row:
+            s, t = smooth_row[0], tex_row[0]
+            delta = (t['P_loss_W'] - s['P_loss_W']) / s['P_loss_W'] * 100
+            flag = "✓" if delta < 0 and t['h_min_um'] >= 10 else "✗"
+            print(f"{c_um:>8.0f} | {s['P_loss_W']:>10.1f} | {t['P_loss_W']:>10.1f} | {delta:>+7.1f}% | {t['h_min_um']:>5.1f} {flag}")
+
+    # По температуре
+    print("\nПо температуре T:")
+    print(f"{'T, °C':>8} | {'P_loss Гл':>10} | {'P_loss Тх':>10} | {'ΔP_loss':>8} | {'h_min':>6}")
+    print("-" * 55)
+
+    for T in temp_values:
+        smooth_row = [r for r in results_t if r['T_C'] == T and r['name'] == 'Гладкий']
+        tex_row = [r for r in results_t if r['T_C'] == T and r['name'] == best_name]
+
+        if smooth_row and tex_row:
+            s, t = smooth_row[0], tex_row[0]
+            delta = (t['P_loss_W'] - s['P_loss_W']) / s['P_loss_W'] * 100
+            flag = "✓" if delta < 0 and t['h_min_um'] >= 10 else "✗"
+            print(f"{T:>8} | {s['P_loss_W']:>10.1f} | {t['P_loss_W']:>10.1f} | {delta:>+7.1f}% | {t['h_min_um']:>5.1f} {flag}")
+
+    # =========================================================================
+    # ГРАФИКИ
+    # =========================================================================
+    # График P_loss vs c
+    fig, axes = plt.subplots(1, 2, figsize=(14, 5))
+
+    ax1 = axes[0]
+    for name in ['Гладкий'] + [c.name for c in candidates]:
+        data = [r for r in results_c if r['name'] == name]
+        if data:
+            x = [r['c_um'] for r in data]
+            y = [r['P_loss_W'] for r in data]
+            marker = 'o-' if name == 'Гладкий' else 's--'
+            ax1.plot(x, y, marker, label=name[:20], linewidth=2)
+    ax1.set_xlabel('c, мкм')
+    ax1.set_ylabel('P_loss, Вт')
+    ax1.set_title('P_loss vs Зазор c')
+    ax1.legend(fontsize=8)
+    ax1.grid(True, alpha=0.3)
+
+    # График P_loss vs T
+    ax2 = axes[1]
+    for name in ['Гладкий'] + [c.name for c in candidates]:
+        data = [r for r in results_t if r['name'] == name]
+        if data:
+            x = [r['T_C'] for r in data]
+            y = [r['P_loss_W'] for r in data]
+            marker = 'o-' if name == 'Гладкий' else 's--'
+            ax2.plot(x, y, marker, label=name[:20], linewidth=2)
+    ax2.set_xlabel('T, °C')
+    ax2.set_ylabel('P_loss, Вт')
+    ax2.set_title('P_loss vs Температура T')
+    ax2.legend(fontsize=8)
+    ax2.grid(True, alpha=0.3)
+
+    plt.tight_layout()
+    plt.savefig(OUT_DIR / 'robustness_comparison.png', dpi=150)
+    print(f"График сохранён: robustness_comparison.png")
+    plt.close()
+
+    # График h_min vs c (проверка ограничения)
+    fig, ax = plt.subplots(figsize=(8, 5))
+    for name in ['Гладкий'] + [c.name for c in candidates]:
+        data = [r for r in results_c if r['name'] == name]
+        if data:
+            x = [r['c_um'] for r in data]
+            y = [r['h_min_um'] for r in data]
+            marker = 'o-' if name == 'Гладкий' else 's--'
+            ax.plot(x, y, marker, label=name[:20], linewidth=2)
+    ax.axhline(10, color='red', linestyle=':', label='h_min = 10 мкм (граница)')
+    ax.set_xlabel('c, мкм')
+    ax.set_ylabel('h_min, мкм')
+    ax.set_title('h_min vs Зазор c')
+    ax.legend(fontsize=8)
+    ax.grid(True, alpha=0.3)
+    plt.tight_layout()
+    plt.savefig(OUT_DIR / 'robustness_h_min.png', dpi=150)
+    print(f"График сохранён: robustness_h_min.png")
+    plt.close()
+
+    return results_c + results_t
 
 
 # ============================================================================
