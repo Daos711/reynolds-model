@@ -67,6 +67,21 @@ MU_BY_TEMP = {40: 0.098, 50: 0.057, 60: 0.037, 70: 0.025}
 # Режим (глобальная переменная, устанавливается из args)
 FAST_MODE = False
 
+# Стили линий для сравнения гладкий vs текстура
+STYLES = {
+    'smooth': {'color': 'blue', 'linestyle': '-', 'linewidth': 2, 'label': 'Гладкий'},
+    'regular': {'color': 'green', 'linestyle': '--', 'linewidth': 2, 'label': 'Regular'},
+    'phyllotaxis': {'color': 'red', 'linestyle': '-.', 'linewidth': 2, 'label': 'Phyllotaxis'},
+}
+
+# Базовые параметры текстуры для сравнения
+TEX_PARAMS_REGULAR = TextureParams(
+    a=0.5e-3, b=0.5e-3, h_star=0.1, Fn=0.20, pattern='regular'
+)
+TEX_PARAMS_PHYLLO = TextureParams(
+    a=0.5e-3, b=0.5e-3, h_star=0.1, Fn=0.20, pattern='phyllotaxis'
+)
+
 
 def create_config(c=BASE_C, epsilon=BASE_EPSILON, phi0=0.0,
                   n_rpm=BASE_N_RPM, mu=BASE_MU, n_phi=180, n_z=50):
@@ -98,39 +113,49 @@ def generate_stage1_figures():
     print("=" * 60)
 
     config = create_config()
-    film_model = SmoothFilmModel(config)
-    result = solve_reynolds(config, film_model)
 
-    phi_deg = np.degrees(result.phi)
-    n_z_mid = len(result.Z) // 2
+    # Решение для трёх моделей
+    model_smooth = SmoothFilmModel(config)
+    model_regular = TexturedFilmModel(config, TEX_PARAMS_REGULAR)
+    model_phyllo = TexturedFilmModel(config, TEX_PARAMS_PHYLLO)
 
-    # fig1_1: Профиль давления P(φ) при Z=0
+    res_smooth = solve_reynolds(config, model_smooth)
+    res_regular = solve_reynolds(config, model_regular)
+    res_phyllo = solve_reynolds(config, model_phyllo)
+
+    phi_deg = np.degrees(res_smooth.phi)
+    n_z_mid = len(res_smooth.Z) // 2
+
+    # fig1_1: Профиль давления P(φ) при Z=0 — 3 кривые
     fig, ax = plt.subplots(figsize=(10, 6))
-    ax.plot(phi_deg, result.P[:, n_z_mid], 'b-', linewidth=2)
+    ax.plot(phi_deg, res_smooth.P[:, n_z_mid], **STYLES['smooth'])
+    ax.plot(phi_deg, res_regular.P[:, n_z_mid], **STYLES['regular'])
+    ax.plot(phi_deg, res_phyllo.P[:, n_z_mid], **STYLES['phyllotaxis'])
     ax.set_xlabel('φ, градусы')
     ax.set_ylabel('P (безразмерное)')
-    # ax.set_title('Профиль давления P(φ) при Z=0')
+    ax.legend()
     ax.grid(True, alpha=0.3)
     ax.set_xlim(0, 360)
     save_fig(fig, 'fig1_1_pressure_profile.png')
 
-    # fig1_2: 3D поверхность P(φ, Z)
+    # fig1_2: 3D поверхность P(φ, Z) — только гладкий (3D с тремя поверхностями нечитаемо)
     fig = plt.figure(figsize=(10, 7))
     ax = fig.add_subplot(111, projection='3d')
-    PHI, Z = np.meshgrid(phi_deg, result.Z, indexing='ij')
-    ax.plot_surface(PHI, Z, result.P, cmap='viridis', alpha=0.8)
+    PHI, Z = np.meshgrid(phi_deg, res_smooth.Z, indexing='ij')
+    ax.plot_surface(PHI, Z, res_smooth.P, cmap='viridis', alpha=0.8)
     ax.set_xlabel('φ, градусы')
     ax.set_ylabel('Z (безразм.)')
     ax.set_zlabel('P (безразм.)')
-    # ax.set_title('Поле давления P(φ, Z)')
     save_fig(fig, 'fig1_2_pressure_3d.png')
 
-    # fig1_3: Толщина плёнки H(φ) при Z=0
+    # fig1_3: Толщина плёнки H(φ) при Z=0 — 3 кривые
     fig, ax = plt.subplots(figsize=(10, 6))
-    ax.plot(phi_deg, result.H[:, n_z_mid], 'g-', linewidth=2)
+    ax.plot(phi_deg, res_smooth.H[:, n_z_mid], **STYLES['smooth'])
+    ax.plot(phi_deg, res_regular.H[:, n_z_mid], **STYLES['regular'])
+    ax.plot(phi_deg, res_phyllo.H[:, n_z_mid], **STYLES['phyllotaxis'])
     ax.set_xlabel('φ, градусы')
     ax.set_ylabel('H (безразмерное)')
-    # ax.set_title('Профиль толщины плёнки H(φ) при Z=0')
+    ax.legend()
     ax.grid(True, alpha=0.3)
     ax.set_xlim(0, 360)
     save_fig(fig, 'fig1_3_film_thickness.png')
@@ -148,74 +173,91 @@ def generate_stage2_figures():
 
     eps_values = np.linspace(0.1, 0.9, 17 if not FAST_MODE else 9)
 
-    W_list, pmax_list, hmin_list = [], [], []
-    f_list, Ploss_list, Q_list = [], [], []
+    # Данные для трёх моделей
+    data = {
+        'smooth': {'W': [], 'pmax': [], 'hmin': [], 'f': [], 'Ploss': [], 'Q': []},
+        'regular': {'W': [], 'pmax': [], 'hmin': [], 'f': [], 'Ploss': [], 'Q': []},
+        'phyllotaxis': {'W': [], 'pmax': [], 'hmin': [], 'f': [], 'Ploss': [], 'Q': []},
+    }
 
     for eps in eps_values:
         config = create_config(epsilon=eps)
-        film_model = SmoothFilmModel(config)
-        result = solve_reynolds(config, film_model)
-        forces = compute_forces(result, config)
-        s2 = compute_stage2(result, config)
 
-        W_list.append(forces.W / 1000)  # кН
-        pmax_list.append(result.p_max / 1e6)  # МПа
-        hmin_list.append(result.h_min * 1e6)  # мкм
-        f_list.append(s2.friction.mu_friction)
-        Ploss_list.append(s2.losses.P_friction)  # Вт
-        Q_list.append(s2.flow.Q_total * 1e6)  # см³/с
+        models = {
+            'smooth': SmoothFilmModel(config),
+            'regular': TexturedFilmModel(config, TEX_PARAMS_REGULAR),
+            'phyllotaxis': TexturedFilmModel(config, TEX_PARAMS_PHYLLO),
+        }
+
+        for name, model in models.items():
+            result = solve_reynolds(config, model)
+            forces = compute_forces(result, config)
+            s2 = compute_stage2(result, config)
+
+            data[name]['W'].append(forces.W / 1000)  # кН
+            data[name]['pmax'].append(result.p_max / 1e6)  # МПа
+            data[name]['hmin'].append(result.h_min * 1e6)  # мкм
+            data[name]['f'].append(s2.friction.mu_friction)
+            data[name]['Ploss'].append(s2.losses.P_friction)  # Вт
+            data[name]['Q'].append(s2.flow.Q_total * 1e6)  # см³/с
 
     # fig2_1: W vs ε
     fig, ax = plt.subplots(figsize=(10, 6))
-    ax.plot(eps_values, W_list, 'b-o', linewidth=2, markersize=6)
+    for name in ['smooth', 'regular', 'phyllotaxis']:
+        ax.plot(eps_values, data[name]['W'], marker='o', markersize=5, **STYLES[name])
     ax.set_xlabel('ε (эксцентриситет)')
     ax.set_ylabel('W, кН')
-    # ax.set_title('Несущая способность W(ε)')
+    ax.legend()
     ax.grid(True, alpha=0.3)
     save_fig(fig, 'fig2_1_W_vs_epsilon.png')
 
     # fig2_2: p_max vs ε
     fig, ax = plt.subplots(figsize=(10, 6))
-    ax.plot(eps_values, pmax_list, 'r-o', linewidth=2, markersize=6)
+    for name in ['smooth', 'regular', 'phyllotaxis']:
+        ax.plot(eps_values, data[name]['pmax'], marker='o', markersize=5, **STYLES[name])
     ax.set_xlabel('ε (эксцентриситет)')
     ax.set_ylabel('p_max, МПа')
-    # ax.set_title('Максимальное давление p_max(ε)')
+    ax.legend()
     ax.grid(True, alpha=0.3)
     save_fig(fig, 'fig2_2_pmax_vs_epsilon.png')
 
     # fig2_3: h_min vs ε
     fig, ax = plt.subplots(figsize=(10, 6))
-    ax.plot(eps_values, hmin_list, 'g-o', linewidth=2, markersize=6)
+    for name in ['smooth', 'regular', 'phyllotaxis']:
+        ax.plot(eps_values, data[name]['hmin'], marker='o', markersize=5, **STYLES[name])
     ax.set_xlabel('ε (эксцентриситет)')
     ax.set_ylabel('h_min, мкм')
-    # ax.set_title('Минимальная толщина плёнки h_min(ε)')
+    ax.legend()
     ax.grid(True, alpha=0.3)
     save_fig(fig, 'fig2_3_hmin_vs_epsilon.png')
 
     # fig2_4: f vs ε
     fig, ax = plt.subplots(figsize=(10, 6))
-    ax.plot(eps_values, f_list, 'm-o', linewidth=2, markersize=6)
+    for name in ['smooth', 'regular', 'phyllotaxis']:
+        ax.plot(eps_values, data[name]['f'], marker='o', markersize=5, **STYLES[name])
     ax.set_xlabel('ε (эксцентриситет)')
     ax.set_ylabel('f (коэффициент трения)')
-    # ax.set_title('Коэффициент трения f(ε)')
+    ax.legend()
     ax.grid(True, alpha=0.3)
     save_fig(fig, 'fig2_4_friction_vs_epsilon.png')
 
     # fig2_5: P_loss vs ε
     fig, ax = plt.subplots(figsize=(10, 6))
-    ax.plot(eps_values, Ploss_list, 'c-o', linewidth=2, markersize=6)
+    for name in ['smooth', 'regular', 'phyllotaxis']:
+        ax.plot(eps_values, data[name]['Ploss'], marker='o', markersize=5, **STYLES[name])
     ax.set_xlabel('ε (эксцентриситет)')
     ax.set_ylabel('P_loss, Вт')
-    # ax.set_title('Потери мощности P_loss(ε)')
+    ax.legend()
     ax.grid(True, alpha=0.3)
     save_fig(fig, 'fig2_5_Ploss_vs_epsilon.png')
 
     # fig2_6: Q vs ε
     fig, ax = plt.subplots(figsize=(10, 6))
-    ax.plot(eps_values, Q_list, '-o', linewidth=2, markersize=6, color='orange')
+    for name in ['smooth', 'regular', 'phyllotaxis']:
+        ax.plot(eps_values, data[name]['Q'], marker='o', markersize=5, **STYLES[name])
     ax.set_xlabel('ε (эксцентриситет)')
     ax.set_ylabel('Q, см³/с')
-    # ax.set_title('Расход смазки Q(ε)')
+    ax.legend()
     ax.grid(True, alpha=0.3)
     save_fig(fig, 'fig2_6_Q_vs_epsilon.png')
 
@@ -232,51 +274,73 @@ def generate_stage3_figures():
 
     W_values = np.linspace(10e3, 80e3, 8 if not FAST_MODE else 4)  # 10-80 кН
 
-    eps_list, phi0_list, hmin_list = [], [], []
+    # Данные для трёх моделей
+    data = {
+        'smooth': {'eps': [], 'phi0': [], 'hmin': []},
+        'regular': {'eps': [], 'phi0': [], 'hmin': []},
+        'phyllotaxis': {'eps': [], 'phi0': [], 'hmin': []},
+    }
+
+    tex_params_map = {
+        'smooth': None,
+        'regular': TEX_PARAMS_REGULAR,
+        'phyllotaxis': TEX_PARAMS_PHYLLO,
+    }
 
     for W_ext in W_values:
         config = create_config(epsilon=0.5)  # начальное
-        try:
-            eq = find_equilibrium(
-                config, W_ext=W_ext, load_angle=-np.pi/2,
-                verbose=False,
-                film_model_factory=lambda cfg: SmoothFilmModel(cfg)
-            )
-            eps_list.append(eq.epsilon)
-            phi0_list.append(np.degrees(eq.phi0))
-            hmin_list.append(eq.stage2.reynolds.h_min * 1e6 if eq.stage2 else np.nan)
-        except Exception as e:
-            print(f"  W={W_ext/1000:.0f}kN failed: {e}")
-            eps_list.append(np.nan)
-            phi0_list.append(np.nan)
-            hmin_list.append(np.nan)
+
+        for name, tex_params in tex_params_map.items():
+            try:
+                if tex_params is None:
+                    factory = lambda cfg: SmoothFilmModel(cfg)
+                else:
+                    # Замыкание для корректного захвата tex_params
+                    factory = lambda cfg, tp=tex_params: TexturedFilmModel(cfg, tp)
+
+                eq = find_equilibrium(
+                    config, W_ext=W_ext, load_angle=-np.pi/2,
+                    verbose=False,
+                    film_model_factory=factory
+                )
+                data[name]['eps'].append(eq.epsilon)
+                data[name]['phi0'].append(np.degrees(eq.phi0))
+                data[name]['hmin'].append(eq.stage2.reynolds.h_min * 1e6 if eq.stage2 else np.nan)
+            except Exception as e:
+                print(f"  W={W_ext/1000:.0f}kN {name} failed: {e}")
+                data[name]['eps'].append(np.nan)
+                data[name]['phi0'].append(np.nan)
+                data[name]['hmin'].append(np.nan)
 
     W_kN = W_values / 1000
 
     # fig3_1: ε vs W
     fig, ax = plt.subplots(figsize=(10, 6))
-    ax.plot(W_kN, eps_list, 'b-o', linewidth=2, markersize=8)
+    for name in ['smooth', 'regular', 'phyllotaxis']:
+        ax.plot(W_kN, data[name]['eps'], marker='o', markersize=6, **STYLES[name])
     ax.set_xlabel('W_ext, кН')
     ax.set_ylabel('ε (эксцентриситет)')
-    # ax.set_title('Эксцентриситет равновесия ε(W)')
+    ax.legend()
     ax.grid(True, alpha=0.3)
     save_fig(fig, 'fig3_1_epsilon_vs_W.png')
 
     # fig3_2: φ₀ vs W
     fig, ax = plt.subplots(figsize=(10, 6))
-    ax.plot(W_kN, phi0_list, 'r-o', linewidth=2, markersize=8)
+    for name in ['smooth', 'regular', 'phyllotaxis']:
+        ax.plot(W_kN, data[name]['phi0'], marker='o', markersize=6, **STYLES[name])
     ax.set_xlabel('W_ext, кН')
     ax.set_ylabel('φ₀, градусы')
-    # ax.set_title('Угол линии центров φ₀(W)')
+    ax.legend()
     ax.grid(True, alpha=0.3)
     save_fig(fig, 'fig3_2_phi0_vs_W.png')
 
     # fig3_3: h_min vs W
     fig, ax = plt.subplots(figsize=(10, 6))
-    ax.plot(W_kN, hmin_list, 'g-o', linewidth=2, markersize=8)
+    for name in ['smooth', 'regular', 'phyllotaxis']:
+        ax.plot(W_kN, data[name]['hmin'], marker='o', markersize=6, **STYLES[name])
     ax.set_xlabel('W_ext, кН')
     ax.set_ylabel('h_min, мкм')
-    # ax.set_title('Минимальная толщина плёнки h_min(W)')
+    ax.legend()
     ax.grid(True, alpha=0.3)
     save_fig(fig, 'fig3_3_hmin_vs_W.png')
 
@@ -293,61 +357,83 @@ def generate_stage4_figures():
 
     eps_values = np.linspace(0.2, 0.8, 7 if not FAST_MODE else 4)
 
-    Kxx_list, Kxy_list, Kyx_list, Kyy_list = [], [], [], []
-    Cxx_list, Cxy_list, Cyx_list, Cyy_list = [], [], [], []
+    # Данные для трёх моделей
+    data = {
+        'smooth': {'Kxx': [], 'Kxy': [], 'Kyx': [], 'Kyy': [],
+                   'Cxx': [], 'Cxy': [], 'Cyx': [], 'Cyy': []},
+        'regular': {'Kxx': [], 'Kxy': [], 'Kyx': [], 'Kyy': [],
+                    'Cxx': [], 'Cxy': [], 'Cyx': [], 'Cyy': []},
+        'phyllotaxis': {'Kxx': [], 'Kxy': [], 'Kyx': [], 'Kyy': [],
+                        'Cxx': [], 'Cxy': [], 'Cyx': [], 'Cyy': []},
+    }
 
-    base_config = create_config(epsilon=0.5)  # базовая конфигурация
-    phi0 = 0.0  # стандартное положение (h_min при φ=π)
+    tex_params_map = {
+        'smooth': None,
+        'regular': TEX_PARAMS_REGULAR,
+        'phyllotaxis': TEX_PARAMS_PHYLLO,
+    }
+
+    base_config = create_config(epsilon=0.5)
+    phi0 = 0.0
 
     for eps in eps_values:
-        try:
-            dyn = compute_dynamic_coefficients(
-                base_config, epsilon=eps, phi0=phi0,
-                film_model_factory=lambda cfg: SmoothFilmModel(cfg)
-            )
+        for name, tex_params in tex_params_map.items():
+            try:
+                if tex_params is None:
+                    factory = lambda cfg: SmoothFilmModel(cfg)
+                else:
+                    factory = lambda cfg, tp=tex_params: TexturedFilmModel(cfg, tp)
 
-            # Жёсткости (МН/м)
-            Kxx_list.append(dyn.Kxx / 1e6)
-            Kxy_list.append(dyn.Kxy / 1e6)
-            Kyx_list.append(dyn.Kyx / 1e6)
-            Kyy_list.append(dyn.Kyy / 1e6)
+                dyn = compute_dynamic_coefficients(
+                    base_config, epsilon=eps, phi0=phi0,
+                    film_model_factory=factory
+                )
 
-            # Демпфирование (кН·с/м)
-            Cxx_list.append(dyn.Cxx / 1e3)
-            Cxy_list.append(dyn.Cxy / 1e3)
-            Cyx_list.append(dyn.Cyx / 1e3)
-            Cyy_list.append(dyn.Cyy / 1e3)
+                # Жёсткости (МН/м)
+                data[name]['Kxx'].append(dyn.Kxx / 1e6)
+                data[name]['Kxy'].append(dyn.Kxy / 1e6)
+                data[name]['Kyx'].append(dyn.Kyx / 1e6)
+                data[name]['Kyy'].append(dyn.Kyy / 1e6)
 
-        except Exception as e:
-            print(f"  ε={eps:.2f} failed: {e}")
-            for lst in [Kxx_list, Kxy_list, Kyx_list, Kyy_list,
-                        Cxx_list, Cxy_list, Cyx_list, Cyy_list]:
-                lst.append(np.nan)
+                # Демпфирование (кН·с/м)
+                data[name]['Cxx'].append(dyn.Cxx / 1e3)
+                data[name]['Cxy'].append(dyn.Cxy / 1e3)
+                data[name]['Cyx'].append(dyn.Cyx / 1e3)
+                data[name]['Cyy'].append(dyn.Cyy / 1e3)
 
-    # fig4_1: K vs ε
-    fig, ax = plt.subplots(figsize=(10, 6))
-    ax.plot(eps_values, Kxx_list, 'b-o', label='K_xx', linewidth=2)
-    ax.plot(eps_values, Kxy_list, 'r-s', label='K_xy', linewidth=2)
-    ax.plot(eps_values, Kyx_list, 'g-^', label='K_yx', linewidth=2)
-    ax.plot(eps_values, Kyy_list, 'm-d', label='K_yy', linewidth=2)
-    ax.set_xlabel('ε (эксцентриситет)')
-    ax.set_ylabel('K, МН/м')
-    # ax.set_title('Коэффициенты жёсткости K(ε)')
-    ax.legend()
-    ax.grid(True, alpha=0.3)
+            except Exception as e:
+                print(f"  ε={eps:.2f} {name} failed: {e}")
+                for key in ['Kxx', 'Kxy', 'Kyx', 'Kyy', 'Cxx', 'Cxy', 'Cyx', 'Cyy']:
+                    data[name][key].append(np.nan)
+
+    # fig4_1: K vs ε (все коэффициенты, 3 кривые на каждом подграфике)
+    fig, axes = plt.subplots(2, 2, figsize=(12, 10))
+    coefs_K = [('Kxx', 'K_{xx}'), ('Kxy', 'K_{xy}'), ('Kyx', 'K_{yx}'), ('Kyy', 'K_{yy}')]
+
+    for ax, (coef, label) in zip(axes.flat, coefs_K):
+        for name in ['smooth', 'regular', 'phyllotaxis']:
+            ax.plot(eps_values, data[name][coef], marker='o', markersize=5, **STYLES[name])
+        ax.set_xlabel('ε')
+        ax.set_ylabel(f'${label}$, МН/м')
+        ax.legend(fontsize=9)
+        ax.grid(True, alpha=0.3)
+
+    fig.tight_layout()
     save_fig(fig, 'fig4_1_K_vs_epsilon.png')
 
-    # fig4_2: C vs ε
-    fig, ax = plt.subplots(figsize=(10, 6))
-    ax.plot(eps_values, Cxx_list, 'b-o', label='C_xx', linewidth=2)
-    ax.plot(eps_values, Cxy_list, 'r-s', label='C_xy', linewidth=2)
-    ax.plot(eps_values, Cyx_list, 'g-^', label='C_yx', linewidth=2)
-    ax.plot(eps_values, Cyy_list, 'm-d', label='C_yy', linewidth=2)
-    ax.set_xlabel('ε (эксцентриситет)')
-    ax.set_ylabel('C, кН·с/м')
-    # ax.set_title('Коэффициенты демпфирования C(ε)')
-    ax.legend()
-    ax.grid(True, alpha=0.3)
+    # fig4_2: C vs ε (все коэффициенты, 3 кривые на каждом подграфике)
+    fig, axes = plt.subplots(2, 2, figsize=(12, 10))
+    coefs_C = [('Cxx', 'C_{xx}'), ('Cxy', 'C_{xy}'), ('Cyx', 'C_{yx}'), ('Cyy', 'C_{yy}')]
+
+    for ax, (coef, label) in zip(axes.flat, coefs_C):
+        for name in ['smooth', 'regular', 'phyllotaxis']:
+            ax.plot(eps_values, data[name][coef], marker='o', markersize=5, **STYLES[name])
+        ax.set_xlabel('ε')
+        ax.set_ylabel(f'${label}$, кН·с/м')
+        ax.legend(fontsize=9)
+        ax.grid(True, alpha=0.3)
+
+    fig.tight_layout()
     save_fig(fig, 'fig4_2_C_vs_epsilon.png')
 
 
@@ -363,68 +449,83 @@ def generate_stage5_figures():
 
     n_values = np.linspace(1000, 5000, 9 if not FAST_MODE else 5)
 
-    margin_list, gamma_list = [], []
-    eigenvalues_all = []
+    # Данные для трёх моделей
+    data = {
+        'smooth': {'margin': [], 'gamma': [], 'eigenvalues': []},
+        'regular': {'margin': [], 'gamma': [], 'eigenvalues': []},
+        'phyllotaxis': {'margin': [], 'gamma': [], 'eigenvalues': []},
+    }
+
+    tex_params_map = {
+        'smooth': None,
+        'regular': TEX_PARAMS_REGULAR,
+        'phyllotaxis': TEX_PARAMS_PHYLLO,
+    }
 
     for n_rpm in n_values:
         config = create_config(n_rpm=n_rpm, epsilon=0.5)
 
-        try:
-            # Находим равновесие для данной скорости
-            eq = find_equilibrium(
-                config, W_ext=BASE_W_EXT, load_angle=-np.pi/2,
-                verbose=False,
-                film_model_factory=lambda cfg: SmoothFilmModel(cfg)
-            )
+        for name, tex_params in tex_params_map.items():
+            try:
+                if tex_params is None:
+                    factory = lambda cfg: SmoothFilmModel(cfg)
+                else:
+                    factory = lambda cfg, tp=tex_params: TexturedFilmModel(cfg, tp)
 
-            # Динамические коэффициенты
-            dyn = compute_dynamic_coefficients(
-                config, epsilon=eq.epsilon, phi0=eq.phi0,
-                film_model_factory=lambda cfg: SmoothFilmModel(cfg)
-            )
+                # Находим равновесие для данной скорости
+                eq = find_equilibrium(
+                    config, W_ext=BASE_W_EXT, load_angle=-np.pi/2,
+                    verbose=False,
+                    film_model_factory=factory
+                )
 
-            # Анализ устойчивости
-            K = np.array([[dyn.Kxx, dyn.Kxy], [dyn.Kyx, dyn.Kyy]])
-            C = np.array([[dyn.Cxx, dyn.Cxy], [dyn.Cyx, dyn.Cyy]])
-            stab = analyze_stability(K, C, BASE_MASS, n_rpm)
+                # Динамические коэффициенты
+                dyn = compute_dynamic_coefficients(
+                    config, epsilon=eq.epsilon, phi0=eq.phi0,
+                    film_model_factory=factory
+                )
 
-            margin_list.append(stab.stability_margin)
-            gamma_list.append(stab.whirl_ratio)
-            eigenvalues_all.append(stab.eigenvalues)
+                # Анализ устойчивости
+                K = np.array([[dyn.Kxx, dyn.Kxy], [dyn.Kyx, dyn.Kyy]])
+                C = np.array([[dyn.Cxx, dyn.Cxy], [dyn.Cyx, dyn.Cyy]])
+                stab = analyze_stability(K, C, BASE_MASS, n_rpm)
 
-        except Exception as e:
-            print(f"  n={n_rpm:.0f}rpm failed: {e}")
-            margin_list.append(np.nan)
-            gamma_list.append(np.nan)
-            eigenvalues_all.append([])
+                data[name]['margin'].append(stab.stability_margin)
+                data[name]['gamma'].append(stab.whirl_ratio)
+                data[name]['eigenvalues'].append(stab.eigenvalues)
 
-    # fig5_1: margin vs n
+            except Exception as e:
+                print(f"  n={n_rpm:.0f}rpm {name} failed: {e}")
+                data[name]['margin'].append(np.nan)
+                data[name]['gamma'].append(np.nan)
+                data[name]['eigenvalues'].append([])
+
+    # fig5_1: margin vs n (3 кривые)
     fig, ax = plt.subplots(figsize=(10, 6))
-    ax.plot(n_values, margin_list, 'b-o', linewidth=2, markersize=8)
-    ax.axhline(y=0, color='r', linestyle='--', alpha=0.7, label='Граница устойчивости')
+    for name in ['smooth', 'regular', 'phyllotaxis']:
+        ax.plot(n_values, data[name]['margin'], marker='o', markersize=6, **STYLES[name])
+    ax.axhline(y=0, color='gray', linestyle='--', alpha=0.7, label='Граница устойчивости')
     ax.set_xlabel('n, об/мин')
     ax.set_ylabel('Запас устойчивости, 1/с')
-    # ax.set_title('Запас устойчивости margin(n)')
     ax.legend()
     ax.grid(True, alpha=0.3)
     save_fig(fig, 'fig5_1_margin_vs_n.png')
 
-    # fig5_2: γ vs n
+    # fig5_2: γ vs n (3 кривые)
     fig, ax = plt.subplots(figsize=(10, 6))
-    ax.plot(n_values, gamma_list, 'g-o', linewidth=2, markersize=8)
-    ax.axhline(y=0.5, color='r', linestyle='--', alpha=0.7, label='γ = 0.5 (критическое)')
+    for name in ['smooth', 'regular', 'phyllotaxis']:
+        ax.plot(n_values, data[name]['gamma'], marker='o', markersize=6, **STYLES[name])
+    ax.axhline(y=0.5, color='gray', linestyle='--', alpha=0.7, label='γ = 0.5 (критическое)')
     ax.set_xlabel('n, об/мин')
     ax.set_ylabel('γ (whirl ratio)')
-    # ax.set_title('Whirl ratio γ(n)')
     ax.legend()
     ax.grid(True, alpha=0.3)
     save_fig(fig, 'fig5_2_whirl_vs_n.png')
 
-    # fig5_3: Собственные значения на комплексной плоскости
+    # fig5_3: Собственные значения на комплексной плоскости (только гладкий для читаемости)
     fig, ax = plt.subplots(figsize=(10, 6))
 
-    # Собираем все собственные значения
-    for i, (n_rpm, eigs) in enumerate(zip(n_values, eigenvalues_all)):
+    for i, (n_rpm, eigs) in enumerate(zip(n_values, data['smooth']['eigenvalues'])):
         if len(eigs) > 0:
             re_parts = [e.real for e in eigs]
             im_parts = [e.imag for e in eigs]
@@ -435,7 +536,6 @@ def generate_stage5_figures():
     ax.axvline(x=0, color='r', linestyle='--', alpha=0.7, label='Re(λ) = 0')
     ax.set_xlabel('Re(λ), 1/с')
     ax.set_ylabel('Im(λ), 1/с')
-    # ax.set_title('Собственные значения системы')
     ax.legend(loc='upper left', fontsize=9)
     ax.grid(True, alpha=0.3)
     save_fig(fig, 'fig5_3_eigenvalues.png')
