@@ -675,15 +675,74 @@ def generate_stage8_figures():
     # fig8_1: Pareto-фронт
     if pareto_path.exists():
         df_pareto = pd.read_csv(pareto_path)
-        fig, ax = plt.subplots(figsize=(10, 6))
-        ax.scatter(df_pareto['P_loss_W'], df_pareto['p_max_MPa'], s=100, c='blue', alpha=0.7)
-        for i, row in df_pareto.iterrows():
-            ax.annotate(row['name'][:15], (row['P_loss_W'], row['p_max_MPa']),
-                        fontsize=9, alpha=0.7)
+
+        # Создаём фигуру с двумя колонками: график + легенда
+        fig = plt.figure(figsize=(14, 7))
+        gs = fig.add_gridspec(1, 2, width_ratios=[2, 1], wspace=0.05)
+        ax = fig.add_subplot(gs[0])
+        ax_legend = fig.add_subplot(gs[1])
+
+        # Цвета по паттерну текстуры
+        pattern_colors = {
+            'spiral': '#1f77b4',      # синий
+            'grid': '#2ca02c',         # зелёный
+            'phyllotaxis': '#d62728',  # красный
+            'hexagonal': '#9467bd',    # фиолетовый
+            'random': '#8c564b',       # коричневый
+        }
+
+        # Извлекаем паттерн из имени или колонки
+        if 'pattern' in df_pareto.columns:
+            patterns = df_pareto['pattern'].values
+        else:
+            patterns = ['unknown'] * len(df_pareto)
+
+        # Рисуем точки с номерами
+        for idx, (i, row) in enumerate(df_pareto.iterrows()):
+            pattern = patterns[idx] if idx < len(patterns) else 'unknown'
+            color = pattern_colors.get(pattern, '#7f7f7f')
+            ax.scatter(row['P_loss_W'], row['p_max_MPa'],
+                      s=250, c=color, alpha=0.8, edgecolors='black', linewidths=1)
+            # Номер внутри точки
+            ax.annotate(str(idx + 1), (row['P_loss_W'], row['p_max_MPa']),
+                       fontsize=10, fontweight='bold', color='white',
+                       ha='center', va='center')
+
         ax.set_xlabel('P_loss, Вт')
         ax.set_ylabel('p_max, МПа')
-        ax.set_title('Pareto-фронт: p_max vs P_loss')
+        ax.set_title('Pareto-фронт: p_max vs P_loss (топ-5)')
         ax.grid(True, alpha=0.3)
+
+        # Легенда-таблица справа
+        ax_legend.axis('off')
+
+        # Формируем текст легенды
+        legend_lines = ["№  Конфигурация", "─" * 35]
+        for idx, (i, row) in enumerate(df_pareto.iterrows()):
+            # Форматируем имя более читабельно
+            name = row['name']
+            # Парсим параметры из имени
+            p_loss = row['P_loss_W']
+            p_max = row['p_max_MPa']
+            pattern = patterns[idx] if idx < len(patterns) else ''
+            legend_lines.append(f"{idx+1:2d}. {name[:25]}")
+            legend_lines.append(f"    P_loss={p_loss:.0f} Вт, p_max={p_max:.1f} МПа")
+
+        legend_text = "\n".join(legend_lines)
+        ax_legend.text(0.02, 0.98, legend_text, transform=ax_legend.transAxes,
+                      fontsize=10, verticalalignment='top', fontfamily='monospace',
+                      bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.5))
+
+        # Легенда по паттернам (цвета)
+        unique_patterns = list(set(patterns))
+        for i, pat in enumerate(unique_patterns):
+            if pat in pattern_colors:
+                ax_legend.scatter([], [], c=pattern_colors[pat], s=100,
+                                 label=pat, edgecolors='black')
+        if unique_patterns:
+            ax_legend.legend(loc='lower left', title='Паттерн',
+                           bbox_to_anchor=(0.02, 0.02), fontsize=10)
+
         save_fig(fig, 'fig8_1_pareto.png')
     else:
         print("  Нет данных для Pareto (pareto_top5.csv)")
