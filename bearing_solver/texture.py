@@ -14,8 +14,7 @@
 
 Генерация центров:
     - Regular (linear): равномерная сетка с шагами Ss, Sz
-    - Phyllotaxis: золотой угол α ≈ 137.5°
-    - Spiral: многозаходная спираль
+    - Phyllotaxis: золотой угол α ≈ 137.5° (с опциональным n_starts для многозаходной спирали)
 
 Связь Fn ↔ геометрия:
     N = (2πRL / (πab)) × Fn = (2RL/ab) × Fn
@@ -48,14 +47,13 @@ class TextureParams:
     Fn: float = 0.15        # доля площади, занятая лунками (0-1)
 
     # Метод генерации центров
-    pattern: Literal['regular', 'phyllotaxis', 'spiral'] = 'phyllotaxis'
+    pattern: Literal['regular', 'phyllotaxis'] = 'phyllotaxis'
 
     # Для regular grid
     theta: float = 0.0      # угол поворота сетки, рад
 
-    # Для spiral
-    n_starts: int = 1       # число заходов спирали (T)
-    spiral_angle: Optional[float] = None  # угол между точками (None = золотой)
+    # Для phyllotaxis
+    n_starts: int = 1       # число заходов спирали (1 = классический филлотаксис)
 
     # Сектор текстуры (опционально)
     phi_min: float = 0.0    # начальный угол сектора, рад
@@ -313,20 +311,30 @@ def generate_phyllotaxis_centers(
     a: float,
     b: float,
     Fn: float,
+    n_starts: int = 1,
     phi_min: float = 0.0,
     phi_max: float = 2 * np.pi
 ) -> Tuple[np.ndarray, np.ndarray]:
     """
     Генерация центров лунок по филлотаксису (золотой угол).
 
-    φ_k = (k × α) mod 2π,  α ≈ 137.508° (золотой угол)
-    z_k = L × (k + 0.5) / N - L/2
+    При n_starts=1: классическое спиральное размещение с золотым углом.
+        φ_k = (k × α) mod 2π,  α ≈ 137.508° (золотой угол)
+        z_k = L × (k + 0.5) / N - L/2
+
+    При n_starts>1: многозаходная спираль (T параллельных спиралей).
+        Каждый заход смещён на 2π/T по углу.
+
+    Число лунок N вычисляется из Fn:
+        N = S_total * Fn / S_cell
+    где S_total = 2πRL, S_cell = πab
 
     Args:
         R: радиус, м
         L: длина, м
         a, b: полуоси лунки, м
         Fn: плотность заполнения (от ВСЕЙ поверхности)
+        n_starts: число заходов спирали (1 = обычный филлотаксис)
         phi_min, phi_max: границы сектора (рад)
 
     Returns:
@@ -350,119 +358,65 @@ def generate_phyllotaxis_centers(
     is_full = abs(phi_max - phi_min - 2*np.pi) < 0.01 or \
               (phi_min == 0 and phi_max >= 2*np.pi - 0.01)
 
-    if is_full:
-        # Полная окружность
-        centers_phi = np.zeros(N)
-        centers_z = np.zeros(N)
-
-        for k in range(N):
-            centers_phi[k] = (k * golden_angle) % (2 * np.pi)
-            centers_z[k] = L * (k + 0.5) / N - L/2
-    else:
-        # Сектор — генерируем больше точек и фильтруем
-        sector_frac = (phi_max - phi_min) / (2 * np.pi) if phi_max > phi_min \
-                      else (2*np.pi - phi_min + phi_max) / (2 * np.pi)
-
-        # Нужно примерно N * sector_frac точек в секторе
-        N_target = max(1, int(N * sector_frac))
-
-        centers_phi = []
-        centers_z = []
-        k = 0
-        max_attempts = N * 10  # защита от бесконечного цикла
-
-        while len(centers_phi) < N_target and k < max_attempts:
-            phi_k = (k * golden_angle) % (2 * np.pi)
-            z_k = L * (k + 0.5) / max(N, N_target) - L/2
-
-            # Проверяем попадание в сектор
-            in_sector = (phi_min <= phi_k <= phi_max) if phi_max > phi_min \
-                        else (phi_k >= phi_min or phi_k <= phi_max)
-
-            if in_sector and -L/2 + a <= z_k <= L/2 - a:
-                centers_phi.append(phi_k)
-                centers_z.append(z_k)
-
-            k += 1
-
-        centers_phi = np.array(centers_phi)
-        centers_z = np.array(centers_z)
-
-    return centers_phi, centers_z
-
-
-def generate_spiral_centers(
-    R: float,
-    L: float,
-    a: float,
-    b: float,
-    Fn: float,
-    n_starts: int = 1,
-    spiral_angle: Optional[float] = None,
-    phi_min: float = 0.0,
-    phi_max: float = 2 * np.pi
-) -> Tuple[np.ndarray, np.ndarray]:
-    """
-    Генерация центров лунок по многозаходной спирали.
-
-    Args:
-        R: радиус, м
-        L: длина, м
-        a, b: полуоси лунки, м
-        Fn: плотность заполнения
-        n_starts: число заходов спирали (T)
-        spiral_angle: угол между точками (None = золотой угол)
-        phi_min, phi_max: границы сектора
-
-    Returns:
-        (centers_phi, centers_z)
-    """
-    # Площадь одной лунки
-    S_cell = np.pi * a * b
-
-    # Площадь поверхности
-    S_total = 2 * np.pi * R * L
-
-    # Число лунок
-    N_total = int(S_total * Fn / S_cell)
-    if N_total < 1:
-        N_total = 1
-
-    # Угол между точками
-    if spiral_angle is None:
-        alpha = np.pi * (3 - np.sqrt(5))  # золотой угол
-    else:
-        alpha = spiral_angle
-
-    # Шаг по оси
-    c_axial = L / max(1, N_total // n_starts)
-
     centers_phi = []
     centers_z = []
 
-    # Проверяем сектор
-    is_full = abs(phi_max - phi_min - 2*np.pi) < 0.01 or \
-              (phi_min == 0 and phi_max >= 2*np.pi - 0.01)
+    if n_starts == 1:
+        # Классический филлотаксис
+        if is_full:
+            # Полная окружность
+            for k in range(N):
+                phi_k = (k * golden_angle) % (2 * np.pi)
+                z_k = L * (k + 0.5) / N - L/2
+                centers_phi.append(phi_k)
+                centers_z.append(z_k)
+        else:
+            # Сектор — генерируем больше точек и фильтруем
+            sector_frac = (phi_max - phi_min) / (2 * np.pi) if phi_max > phi_min \
+                          else (2*np.pi - phi_min + phi_max) / (2 * np.pi)
 
-    for t in range(n_starts):
-        phi_0 = 2 * np.pi * t / n_starts  # начальный угол захода
+            # Нужно примерно N * sector_frac точек в секторе
+            N_target = max(1, int(N * sector_frac))
 
-        n_points = N_total // n_starts
-        for n in range(n_points):
-            phi_n = (phi_0 + n * alpha) % (2 * np.pi)
-            z_n = -L/2 + a + n * c_axial
+            k = 0
+            max_attempts = N * 10  # защита от бесконечного цикла
 
-            if z_n > L/2 - a:
-                break
+            while len(centers_phi) < N_target and k < max_attempts:
+                phi_k = (k * golden_angle) % (2 * np.pi)
+                z_k = L * (k + 0.5) / max(N, N_target) - L/2
 
-            # Проверка сектора
-            in_sector = is_full or \
-                        ((phi_min <= phi_n <= phi_max) if phi_max > phi_min
-                         else (phi_n >= phi_min or phi_n <= phi_max))
+                # Проверяем попадание в сектор
+                in_sector = (phi_min <= phi_k <= phi_max) if phi_max > phi_min \
+                            else (phi_k >= phi_min or phi_k <= phi_max)
 
-            if in_sector:
-                centers_phi.append(phi_n)
-                centers_z.append(z_n)
+                if in_sector and -L/2 + a <= z_k <= L/2 - a:
+                    centers_phi.append(phi_k)
+                    centers_z.append(z_k)
+
+                k += 1
+    else:
+        # Многозаходная спираль
+        n_per_start = N // n_starts
+
+        for t in range(n_starts):
+            phi_0 = 2 * np.pi * t / n_starts  # начальная фаза захода
+
+            for k in range(n_per_start):
+                phi_k = (phi_0 + k * golden_angle) % (2 * np.pi)
+                z_k = L * (k + 0.5) / n_per_start - L/2
+
+                # Проверка границ по z
+                if z_k < -L/2 + a or z_k > L/2 - a:
+                    continue
+
+                # Проверка сектора
+                in_sector = is_full or \
+                            ((phi_min <= phi_k <= phi_max) if phi_max > phi_min
+                             else (phi_k >= phi_min or phi_k <= phi_max))
+
+                if in_sector:
+                    centers_phi.append(phi_k)
+                    centers_z.append(z_k)
 
     return np.array(centers_phi), np.array(centers_z)
 
@@ -569,21 +523,12 @@ class TexturedFilmModel(FilmModel):
                 a=self.params.a, b=self.params.b,
                 Fn=self.params.Fn, theta=self.params.theta
             )
-        elif self.params.pattern == 'spiral':
-            self.centers_phi, self.centers_z = generate_spiral_centers(
-                R=config.R, L=config.L,
-                a=self.params.a, b=self.params.b,
-                Fn=self.params.Fn,
-                n_starts=self.params.n_starts,
-                spiral_angle=self.params.spiral_angle,
-                phi_min=self.params.phi_min,
-                phi_max=self.params.phi_max
-            )
-        else:  # phyllotaxis
+        else:  # phyllotaxis (с опциональным n_starts для многозаходной спирали)
             self.centers_phi, self.centers_z = generate_phyllotaxis_centers(
                 R=config.R, L=config.L,
                 a=self.params.a, b=self.params.b,
                 Fn=self.params.Fn,
+                n_starts=self.params.n_starts,
                 phi_min=self.params.phi_min,
                 phi_max=self.params.phi_max
             )
