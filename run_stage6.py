@@ -110,7 +110,7 @@ def run_visualization_test(plot=True):
     print(f"\nПараметры текстуры:")
     print(f"  Число лунок N = {stats['N_cells']}")
     print(f"  Полуоси: a = {stats['a_mm']:.2f} мм, b = {stats['b_mm']:.2f} мм")
-    print(f"  Глубина: h = {stats['h_depth_um']:.1f} мкм (h* = {stats['h_depth_star']:.4f})")
+    print(f"  Глубина: h = {stats['h_depth_um']:.1f} мкм (h* = {stats['h_star']:.4f})")
     print(f"  Fn заданное = {stats['Fn']:.2%}")
     print(f"  Fn фактическое = {stats['Fn_actual']:.2%}")
     print(f"  Паттерн: {stats['pattern']}")
