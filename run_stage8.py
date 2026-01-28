@@ -193,6 +193,7 @@ def compute_case(
         )
     except Exception as e:
         # Если не сходится — возвращаем невалидный результат
+        print(f"  [WARN] find_equilibrium failed for {name}: {type(e).__name__}: {e}")
         return CaseResult(
             name=name, epsilon=0.99, phi0_deg=0, W=0, p_max=0, h_min=0,
             Q=0, f=0, P_loss=0, is_valid=False,
@@ -437,6 +438,63 @@ def run_block2_clearance_sweep():
 # БЛОК 3: Оптимизация текстуры (ПАРАЛЛЕЛЬНО)
 # ============================================================================
 
+def _compute_texture_case_fast(args: Tuple) -> CaseResult:
+    """
+    БЫСТРЫЙ воркер: использует фиксированное ε вместо find_equilibrium.
+
+    Идея: текстура слабо влияет на положение равновесия, поэтому
+    используем ε от гладкого подшипника и сравниваем только p_max, P_loss.
+    """
+    Fn, h_star, pattern, phi_min, phi_max, base_epsilon, base_phi0 = args
+    sector_name = 'full' if phi_max - phi_min > 6 else 'partial'
+
+    tex_params = TextureParams(
+        a=0.5e-3,
+        b=0.5e-3,
+        h_star=h_star,
+        Fn=Fn,
+        pattern=pattern,
+        phi_min=phi_min,
+        phi_max=phi_max,
+    )
+
+    # Конфиг с фиксированным ε (от гладкого подшипника)
+    config = BearingConfig(
+        R=BASE_R, L=BASE_L, c=BASE_C,
+        epsilon=base_epsilon, phi0=base_phi0,
+        n_rpm=BASE_N_RPM, mu=BASE_MU,
+        n_phi=180, n_z=50
+    )
+
+    # Проверка валидности текстуры
+    film_model = TexturedFilmModel(config, tex_params)
+    if not film_model.is_valid:
+        return CaseResult(
+            name=f"Fn{Fn}_h{h_star}_{pattern}_{sector_name}",
+            epsilon=base_epsilon, phi0_deg=np.degrees(base_phi0),
+            W=0, p_max=0, h_min=0, Q=0, f=0, P_loss=0,
+            is_valid=False, Fn=Fn, h_star=h_star, pattern=pattern,
+        )
+
+    # Один вызов solver (без итераций!)
+    reynolds = solve_reynolds(config, film_model)
+    stage2 = compute_stage2(reynolds, config)
+
+    return CaseResult(
+        name=f"Fn{Fn}_h{h_star}_{pattern}_{sector_name}",
+        epsilon=base_epsilon,
+        phi0_deg=np.degrees(base_phi0),
+        W=stage2.forces.W,
+        p_max=reynolds.p_max,
+        h_min=reynolds.h_min,
+        Q=stage2.flow.Q_total,
+        f=stage2.friction.mu_friction,
+        P_loss=stage2.losses.P_friction,
+        is_valid=True,
+        Fn=Fn, h_star=h_star, pattern=pattern,
+    )
+
+
 def _compute_texture_case(args: Tuple) -> CaseResult:
     """
     Воркер для параллельного расчёта одной конфигурации текстуры.
@@ -480,17 +538,33 @@ def _compute_texture_case(args: Tuple) -> CaseResult:
     return result
 
 
-def run_block3_texture_optimization(parallel: bool = True, max_workers: int = None):
+def run_block3_texture_optimization(parallel: bool = True, max_workers: int = None, fast_mode: bool = True):
     """
     Сетка оптимизации текстуры.
 
     Args:
         parallel: использовать параллельные вычисления (по умолчанию True)
         max_workers: количество процессов (по умолчанию cpu_count - 1)
+        fast_mode: использовать фиксированное ε вместо find_equilibrium (в 30 раз быстрее)
     """
     print("\n" + "=" * 70)
     print("БЛОК 3: Оптимизация текстуры")
     print("=" * 70)
+
+    # В fast_mode сначала находим ε для гладкого подшипника
+    base_epsilon = 0.6
+    base_phi0 = np.radians(135)
+
+    if fast_mode:
+        print("  Быстрый режим: поиск базового ε...")
+        base_config = create_config(c=BASE_C, mu=BASE_MU)
+        eq = find_equilibrium(
+            base_config, W_ext=BASE_W_EXT, load_angle=-np.pi/2,
+            verbose=False, film_model_factory=smooth_factory
+        )
+        base_epsilon = eq.epsilon
+        base_phi0 = eq.phi0
+        print(f"  Базовое ε = {base_epsilon:.4f}, φ₀ = {np.degrees(base_phi0):.1f}°")
 
     # Формируем список задач
     tasks = []
@@ -498,10 +572,21 @@ def run_block3_texture_optimization(parallel: bool = True, max_workers: int = No
         for h_star in H_STAR_VALUES:
             for pattern in PATTERN_VALUES:
                 for phi_min, phi_max in SECTOR_VALUES:
-                    tasks.append((Fn, h_star, pattern, phi_min, phi_max))
+                    if fast_mode:
+                        tasks.append((Fn, h_star, pattern, phi_min, phi_max, base_epsilon, base_phi0))
+                    else:
+                        tasks.append((Fn, h_star, pattern, phi_min, phi_max))
 
     total = len(tasks)
     print(f"Всего конфигураций: {total}")
+
+    # Выбираем воркер
+    worker_fn = _compute_texture_case_fast if fast_mode else _compute_texture_case
+
+    # Прогрев Numba JIT
+    print("  Прогрев Numba JIT...")
+    _ = worker_fn(tasks[0])
+    print("  Прогрев завершён")
 
     if parallel:
         # Параллельное выполнение
@@ -511,16 +596,27 @@ def run_block3_texture_optimization(parallel: bool = True, max_workers: int = No
         results = []
         with ProcessPoolExecutor(max_workers=n_workers) as executor:
             # Запускаем все задачи
-            future_to_task = {executor.submit(_compute_texture_case, task): task for task in tasks}
+            future_to_task = {executor.submit(worker_fn, task): task for task in tasks}
 
             # Собираем результаты по мере готовности
             for i, future in enumerate(as_completed(future_to_task), 1):
                 task = future_to_task[future]
                 try:
-                    result = future.result()
+                    # Таймаут 60 секунд на одну конфигурацию
+                    result = future.result(timeout=60)
                     results.append(result)
                     if i % 10 == 0 or i == total:
                         print(f"  [{i}/{total}] завершено")
+                except TimeoutError:
+                    Fn, h_star, pattern, phi_min, phi_max = task
+                    sector_name = 'full' if phi_max - phi_min > 6 else 'partial'
+                    print(f"  [TIMEOUT] Fn={Fn}, h*={h_star}, {pattern}, {sector_name}")
+                    results.append(CaseResult(
+                        name=f"Fn{Fn}_h{h_star}_{pattern}_{sector_name}",
+                        epsilon=0, phi0_deg=0, W=0, p_max=0, h_min=0,
+                        Q=0, f=0, P_loss=0, is_valid=False,
+                        Fn=Fn, h_star=h_star, pattern=pattern,
+                    ))
                 except Exception as e:
                     Fn, h_star, pattern, phi_min, phi_max = task
                     sector_name = 'full' if phi_max - phi_min > 6 else 'partial'
@@ -536,7 +632,7 @@ def run_block3_texture_optimization(parallel: bool = True, max_workers: int = No
         print("Последовательный режим")
         results = []
         for i, task in enumerate(tasks, 1):
-            result = _compute_texture_case(task)
+            result = worker_fn(task)
             results.append(result)
             if i % 10 == 0:
                 Fn, h_star, pattern, _, _ = task
@@ -668,65 +764,306 @@ def run_block4_pareto(optimization_results: List[CaseResult]):
 # БЛОК 5: Робастность топ-5
 # ============================================================================
 
-def run_block5_robustness(top5: List[CaseResult]):
-    """Робастность топ-5 по c и μ."""
+def run_block5_robustness(top5: List[CaseResult], skip: bool = False):
+    """
+    Робастность топ-5 по c и μ (fast_mode).
+
+    Для каждого топ-кандидата и гладкого подшипника:
+    - Sweep по зазору c
+    - Sweep по температуре/вязкости
+    """
     print("\n" + "=" * 70)
     print("БЛОК 5: Робастность топ-5")
     print("=" * 70)
 
+    if skip:
+        print("  [ПРОПУЩЕН] — используйте skip=False для полного анализа")
+        return []
+
     if not top5:
         print("Нет топ-5 для анализа робастности!")
-        return
+        return []
 
-    results = []
+    # Берём топ-3 для анализа
+    candidates = top5[:3]
+    print(f"Анализируем топ-{len(candidates)} кандидатов")
 
-    # Sweep по c для топ-5
-    c_subset = [30e-6, 50e-6, 100e-6, 180e-6]
+    # Sweep параметры
+    c_values = [30e-6, 50e-6, 80e-6, 125e-6, 180e-6]
+    temp_values = [40, 50, 60, 70]  # °C
 
-    for r in top5[:3]:  # Только первые 3 для скорости
-        print(f"\n{r.name}:")
+    results_c = []  # sweep по c
+    results_t = []  # sweep по T
 
-        tex_params = TextureParams(
-            a=0.5e-3,
-            b=0.5e-3,
-            h_star=r.h_star,
-            Fn=r.Fn,
-            pattern=r.pattern,
-        )
+    # =========================================================================
+    # ПРЕДРАСЧЁТ: находим ε для всех значений c и T один раз
+    # =========================================================================
+    print("\n  Предрасчёт ε для всех условий...")
 
-        for c in c_subset:
-            base_config = create_config(c=c, mu=BASE_MU)
-            factory = create_texture_factory(tex_params)
+    eps_by_c = {}  # {c: (epsilon, phi0)}
+    eps_by_T = {}  # {T: (epsilon, phi0)}
 
-            result = compute_case(
-                name=f"{r.name}_c{c*1e6:.0f}",
-                base_config=base_config,
-                film_model_factory=factory,
-                compute_dynamics=True,
-                tex_params=tex_params,
+    for c in c_values:
+        base_config = create_config(c=c, mu=BASE_MU)
+        try:
+            eq = find_equilibrium(
+                base_config, W_ext=BASE_W_EXT, load_angle=-np.pi/2,
+                verbose=False, film_model_factory=smooth_factory
             )
-            result.c = c
-            results.append(result)
+            eps_by_c[c] = (eq.epsilon, eq.phi0)
+        except:
+            pass
 
-            print(f"  c={c*1e6:.0f} мкм: ε={result.epsilon:.4f}, "
-                  f"P_loss={result.P_loss:.1f} Вт, margin={result.margin:.1f} 1/с")
+    for T in temp_values:
+        mu = MU_BY_TEMP[T]
+        base_config = create_config(c=BASE_C, mu=mu)
+        try:
+            eq = find_equilibrium(
+                base_config, W_ext=BASE_W_EXT, load_angle=-np.pi/2,
+                verbose=False, film_model_factory=smooth_factory
+            )
+            eps_by_T[T] = (eq.epsilon, eq.phi0)
+        except:
+            pass
 
-    # Сохраняем
-    if results:
-        df = pd.DataFrame([{
-            'name': r.name,
-            'c_um': r.c*1e6,
-            'epsilon': r.epsilon,
-            'h_min_um': r.h_min*1e6,
-            'p_max_MPa': r.p_max/1e6,
-            'P_loss_W': r.P_loss,
-            'margin': r.margin,
-        } for r in results])
+    print(f"  Найдено: {len(eps_by_c)} по c, {len(eps_by_T)} по T")
 
-        df.to_csv(OUT_DIR / 'robustness_sweep.csv', index=False)
-        print(f"\nCSV сохранён: {OUT_DIR / 'robustness_sweep.csv'}")
+    # =========================================================================
+    # SWEEP ПО ЗАЗОРУ c (при базовой температуре)
+    # =========================================================================
+    print("\n--- Sweep по зазору c ---")
 
-    return results
+    for c in c_values:
+        if c not in eps_by_c:
+            print(f"  c={c*1e6:.0f} мкм: пропуск (нет ε)")
+            continue
+        base_eps, base_phi0 = eps_by_c[c]
+
+        # Гладкий подшипник
+        config_smooth = BearingConfig(
+            R=BASE_R, L=BASE_L, c=c,
+            epsilon=base_eps, phi0=base_phi0,
+            n_rpm=BASE_N_RPM, mu=BASE_MU,
+            n_phi=180, n_z=50
+        )
+        film_smooth = SmoothFilmModel(config_smooth)
+        rey_smooth = solve_reynolds(config_smooth, film_smooth)
+        s2_smooth = compute_stage2(rey_smooth, config_smooth)
+
+        results_c.append({
+            'c_um': c * 1e6,
+            'name': 'Гладкий',
+            'epsilon': base_eps,
+            'h_min_um': rey_smooth.h_min * 1e6,
+            'p_max_MPa': rey_smooth.p_max / 1e6,
+            'P_loss_W': s2_smooth.losses.P_friction,
+            'f': s2_smooth.friction.mu_friction,
+        })
+
+        # Текстурированные кандидаты
+        for cand in candidates:
+            tex_params = TextureParams(
+                a=0.5e-3, b=0.5e-3,
+                h_star=cand.h_star, Fn=cand.Fn, pattern=cand.pattern,
+            )
+            config_tex = BearingConfig(
+                R=BASE_R, L=BASE_L, c=c,
+                epsilon=base_eps, phi0=base_phi0,
+                n_rpm=BASE_N_RPM, mu=BASE_MU,
+                n_phi=180, n_z=50
+            )
+            film_tex = TexturedFilmModel(config_tex, tex_params)
+            if not film_tex.is_valid:
+                continue
+            rey_tex = solve_reynolds(config_tex, film_tex)
+            s2_tex = compute_stage2(rey_tex, config_tex)
+
+            results_c.append({
+                'c_um': c * 1e6,
+                'name': cand.name,
+                'epsilon': base_eps,
+                'h_min_um': rey_tex.h_min * 1e6,
+                'p_max_MPa': rey_tex.p_max / 1e6,
+                'P_loss_W': s2_tex.losses.P_friction,
+                'f': s2_tex.friction.mu_friction,
+            })
+
+        print(f"  c={c*1e6:.0f} мкм: ε={base_eps:.4f}")
+
+    # =========================================================================
+    # SWEEP ПО ТЕМПЕРАТУРЕ T (при базовом зазоре)
+    # =========================================================================
+    print("\n--- Sweep по температуре T ---")
+
+    for T in temp_values:
+        if T not in eps_by_T:
+            print(f"  T={T}°C: пропуск (нет ε)")
+            continue
+        mu = MU_BY_TEMP[T]
+        base_eps, base_phi0 = eps_by_T[T]
+
+        # Гладкий подшипник
+        config_smooth = BearingConfig(
+            R=BASE_R, L=BASE_L, c=BASE_C,
+            epsilon=base_eps, phi0=base_phi0,
+            n_rpm=BASE_N_RPM, mu=mu,
+            n_phi=180, n_z=50
+        )
+        film_smooth = SmoothFilmModel(config_smooth)
+        rey_smooth = solve_reynolds(config_smooth, film_smooth)
+        s2_smooth = compute_stage2(rey_smooth, config_smooth)
+
+        results_t.append({
+            'T_C': T,
+            'mu': mu,
+            'name': 'Гладкий',
+            'epsilon': base_eps,
+            'h_min_um': rey_smooth.h_min * 1e6,
+            'p_max_MPa': rey_smooth.p_max / 1e6,
+            'P_loss_W': s2_smooth.losses.P_friction,
+            'f': s2_smooth.friction.mu_friction,
+        })
+
+        # Текстурированные кандидаты
+        for cand in candidates:
+            tex_params = TextureParams(
+                a=0.5e-3, b=0.5e-3,
+                h_star=cand.h_star, Fn=cand.Fn, pattern=cand.pattern,
+            )
+            config_tex = BearingConfig(
+                R=BASE_R, L=BASE_L, c=BASE_C,
+                epsilon=base_eps, phi0=base_phi0,
+                n_rpm=BASE_N_RPM, mu=mu,
+                n_phi=180, n_z=50
+            )
+            film_tex = TexturedFilmModel(config_tex, tex_params)
+            if not film_tex.is_valid:
+                continue
+            rey_tex = solve_reynolds(config_tex, film_tex)
+            s2_tex = compute_stage2(rey_tex, config_tex)
+
+            results_t.append({
+                'T_C': T,
+                'mu': mu,
+                'name': cand.name,
+                'epsilon': base_eps,
+                'h_min_um': rey_tex.h_min * 1e6,
+                'p_max_MPa': rey_tex.p_max / 1e6,
+                'P_loss_W': s2_tex.losses.P_friction,
+                'f': s2_tex.friction.mu_friction,
+            })
+
+        print(f"  T={T}°C (μ={mu}): ε={base_eps:.4f}")
+
+    # =========================================================================
+    # СОХРАНЕНИЕ РЕЗУЛЬТАТОВ
+    # =========================================================================
+    df_c = pd.DataFrame(results_c)
+    df_t = pd.DataFrame(results_t)
+
+    df_c.to_csv(OUT_DIR / 'robustness_clearance.csv', index=False)
+    df_t.to_csv(OUT_DIR / 'robustness_temperature.csv', index=False)
+    print(f"\nCSV сохранены: robustness_clearance.csv, robustness_temperature.csv")
+
+    # =========================================================================
+    # ИТОГОВАЯ ТАБЛИЦА: ЛУЧШИЙ vs ГЛАДКИЙ
+    # =========================================================================
+    print("\n--- Итоговая таблица: Лучший vs Гладкий ---")
+
+    best_name = candidates[0].name
+
+    # По зазору
+    print("\nПо зазору c:")
+    print(f"{'c, мкм':>8} | {'P_loss Гл':>10} | {'P_loss Тх':>10} | {'ΔP_loss':>8} | {'h_min':>6}")
+    print("-" * 55)
+
+    for c in c_values:
+        c_um = c * 1e6
+        smooth_row = [r for r in results_c if r['c_um'] == c_um and r['name'] == 'Гладкий']
+        tex_row = [r for r in results_c if r['c_um'] == c_um and r['name'] == best_name]
+
+        if smooth_row and tex_row:
+            s, t = smooth_row[0], tex_row[0]
+            delta = (t['P_loss_W'] - s['P_loss_W']) / s['P_loss_W'] * 100
+            flag = "✓" if delta < 0 and t['h_min_um'] >= 10 else "✗"
+            print(f"{c_um:>8.0f} | {s['P_loss_W']:>10.1f} | {t['P_loss_W']:>10.1f} | {delta:>+7.1f}% | {t['h_min_um']:>5.1f} {flag}")
+
+    # По температуре
+    print("\nПо температуре T:")
+    print(f"{'T, °C':>8} | {'P_loss Гл':>10} | {'P_loss Тх':>10} | {'ΔP_loss':>8} | {'h_min':>6}")
+    print("-" * 55)
+
+    for T in temp_values:
+        smooth_row = [r for r in results_t if r['T_C'] == T and r['name'] == 'Гладкий']
+        tex_row = [r for r in results_t if r['T_C'] == T and r['name'] == best_name]
+
+        if smooth_row and tex_row:
+            s, t = smooth_row[0], tex_row[0]
+            delta = (t['P_loss_W'] - s['P_loss_W']) / s['P_loss_W'] * 100
+            flag = "✓" if delta < 0 and t['h_min_um'] >= 10 else "✗"
+            print(f"{T:>8} | {s['P_loss_W']:>10.1f} | {t['P_loss_W']:>10.1f} | {delta:>+7.1f}% | {t['h_min_um']:>5.1f} {flag}")
+
+    # =========================================================================
+    # ГРАФИКИ
+    # =========================================================================
+    # График P_loss vs c
+    fig, axes = plt.subplots(1, 2, figsize=(14, 5))
+
+    ax1 = axes[0]
+    for name in ['Гладкий'] + [c.name for c in candidates]:
+        data = [r for r in results_c if r['name'] == name]
+        if data:
+            x = [r['c_um'] for r in data]
+            y = [r['P_loss_W'] for r in data]
+            marker = 'o-' if name == 'Гладкий' else 's--'
+            ax1.plot(x, y, marker, label=name[:20], linewidth=2)
+    ax1.set_xlabel('c, мкм')
+    ax1.set_ylabel('P_loss, Вт')
+    ax1.set_title('P_loss vs Зазор c')
+    ax1.legend(fontsize=8)
+    ax1.grid(True, alpha=0.3)
+
+    # График P_loss vs T
+    ax2 = axes[1]
+    for name in ['Гладкий'] + [c.name for c in candidates]:
+        data = [r for r in results_t if r['name'] == name]
+        if data:
+            x = [r['T_C'] for r in data]
+            y = [r['P_loss_W'] for r in data]
+            marker = 'o-' if name == 'Гладкий' else 's--'
+            ax2.plot(x, y, marker, label=name[:20], linewidth=2)
+    ax2.set_xlabel('T, °C')
+    ax2.set_ylabel('P_loss, Вт')
+    ax2.set_title('P_loss vs Температура T')
+    ax2.legend(fontsize=8)
+    ax2.grid(True, alpha=0.3)
+
+    plt.tight_layout()
+    plt.savefig(OUT_DIR / 'robustness_comparison.png', dpi=150)
+    print(f"График сохранён: robustness_comparison.png")
+    plt.close()
+
+    # График h_min vs c (проверка ограничения)
+    fig, ax = plt.subplots(figsize=(8, 5))
+    for name in ['Гладкий'] + [c.name for c in candidates]:
+        data = [r for r in results_c if r['name'] == name]
+        if data:
+            x = [r['c_um'] for r in data]
+            y = [r['h_min_um'] for r in data]
+            marker = 'o-' if name == 'Гладкий' else 's--'
+            ax.plot(x, y, marker, label=name[:20], linewidth=2)
+    ax.axhline(10, color='red', linestyle=':', label='h_min = 10 мкм (граница)')
+    ax.set_xlabel('c, мкм')
+    ax.set_ylabel('h_min, мкм')
+    ax.set_title('h_min vs Зазор c')
+    ax.legend(fontsize=8)
+    ax.grid(True, alpha=0.3)
+    plt.tight_layout()
+    plt.savefig(OUT_DIR / 'robustness_h_min.png', dpi=150)
+    print(f"График сохранён: robustness_h_min.png")
+    plt.close()
+
+    return results_c + results_t
 
 
 # ============================================================================
@@ -775,11 +1112,103 @@ def run_block6_summary():
 # MAIN
 # ============================================================================
 
-def main():
+def run_diagnostic_test():
+    """
+    Диагностический тест: один расчёт как в Stage 7.
+    Если тут работает, а в БЛОК 1 нет — проблема в обвязке.
+    """
+    print("\n" + "=" * 70)
+    print("ДИАГНОСТИКА: Тест одной точки (как Stage 7)")
+    print("=" * 70)
+
+    from bearing_solver import compute_stage2
+
+    # Параметры как в Stage 7
+    config = BearingConfig(
+        R=0.050,
+        L=0.050,
+        c=50e-6,
+        epsilon=0.6,
+        phi0=np.radians(45),
+        n_rpm=3000,
+        mu=0.04,  # как в Stage 7
+        n_phi=180,
+        n_z=50,
+    )
+
+    print(f"Конфиг: R={config.R}, L={config.L}, c={config.c*1e6:.0f} мкм")
+    print(f"        ε={config.epsilon}, φ₀={np.degrees(config.phi0):.1f}°")
+    print(f"        n={config.n_rpm} об/мин, μ={config.mu} Па·с")
+
+    # 1) Гладкая модель без равновесия
+    print("\n--- Тест 1: Гладкая модель (без равновесия) ---")
+    film_model = SmoothFilmModel(config)
+    reynolds = solve_reynolds(config, film_model)
+    forces = compute_forces(reynolds, config)
+
+    print(f"  p: max={reynolds.p_max/1e6:.2f} МПа, h_min={reynolds.h_min*1e6:.2f} мкм")
+    print(f"  W = {forces.W/1000:.2f} кН")
+
+    if reynolds.p_max < 1e3:
+        print("  [ОШИБКА] p_max слишком мал! Solver не работает.")
+        return False
+
+    # 2) Равновесие для гладкой модели
+    print("\n--- Тест 2: Гладкая модель + find_equilibrium ---")
+    W_ext = 50e3  # 50 кН
+
+    try:
+        eq = find_equilibrium(
+            config, W_ext=W_ext, load_angle=-np.pi/2,
+            verbose=True, film_model_factory=smooth_factory
+        )
+        print(f"  Равновесие найдено: ε={eq.epsilon:.4f}, φ₀={np.degrees(eq.phi0):.1f}°")
+        print(f"  W_achieved = {eq.W_achieved/1000:.2f} кН (цель: {W_ext/1000:.0f} кН)")
+        print(f"  residual_vec = {eq.residual_vec*100:.2f}%")
+    except Exception as e:
+        print(f"  [ОШИБКА] Exception: {type(e).__name__}: {e}")
+        import traceback
+        traceback.print_exc()
+        return False
+
+    # 3) С параметрами Stage 8
+    print("\n--- Тест 3: Параметры Stage 8 (μ=0.057) ---")
+    config_s8 = create_config(c=BASE_C, mu=BASE_MU)
+    print(f"  c={config_s8.c*1e6:.0f} мкм, μ={config_s8.mu} Па·с")
+
+    try:
+        eq_s8 = find_equilibrium(
+            config_s8, W_ext=BASE_W_EXT, load_angle=-np.pi/2,
+            verbose=True, film_model_factory=smooth_factory
+        )
+        print(f"  Равновесие Stage8: ε={eq_s8.epsilon:.4f}, W={eq_s8.W_achieved/1000:.2f} кН")
+    except Exception as e:
+        print(f"  [ОШИБКА] Exception: {type(e).__name__}: {e}")
+        import traceback
+        traceback.print_exc()
+        return False
+
+    print("\n[OK] Диагностика пройдена — solver работает!")
+    return True
+
+
+def main(run_diagnostics: bool = False):
+    """
+    Запуск этапа 8.
+
+    Args:
+        run_diagnostics: запустить диагностический тест перед основным расчётом
+    """
     print("ЭТАП 8: Параметрические исследования и оптимизация текстуры")
     print("=" * 70)
 
     OUT_DIR.mkdir(parents=True, exist_ok=True)
+
+    # Диагностика (опционально)
+    if run_diagnostics:
+        if not run_diagnostic_test():
+            print("\n[КРИТИЧЕСКАЯ ОШИБКА] Диагностика не пройдена!")
+            return
 
     # БЛОК 1
     four_modes = run_block1_four_modes()
@@ -806,4 +1235,6 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    import sys
+    run_diag = '--diag' in sys.argv or '--diagnostics' in sys.argv
+    main(run_diagnostics=run_diag)

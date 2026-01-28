@@ -117,6 +117,91 @@ def _wrap_to_pi(angle: float) -> float:
 
 
 @njit(cache=True)
+def _compute_texture_field_scatter(
+    phi: np.ndarray,
+    z_dim: np.ndarray,
+    centers_phi: np.ndarray,
+    centers_z: np.ndarray,
+    R: float,
+    a: float,
+    b: float,
+    h_depth_star: float
+) -> np.ndarray:
+    """
+    Вычислить поле текстуры SCATTER-алгоритмом (Numba-ускоренно).
+
+    Вместо проверки всех N лунок для каждой точки сетки,
+    обновляем только локальный патч вокруг каждой лунки.
+
+    Сложность: O(N × m²) вместо O(n_phi × n_z × N)
+    При N=1000, m=7: 49k операций вместо 9M — в 180 раз быстрее!
+
+    Args:
+        phi: углы сетки [0, 2π), shape (n_phi,)
+        z_dim: размерные z-координаты, м, shape (n_z,)
+        centers_phi: углы центров лунок, shape (N,)
+        centers_z: z-координаты центров (размерные, м), shape (N,)
+        R: радиус подшипника, м
+        a, b: полуоси лунки, м
+        h_depth_star: безразмерная глубина лунки (h_depth/c)
+
+    Returns:
+        texture_field: shape (n_phi, n_z)
+    """
+    n_phi = len(phi)
+    n_z = len(z_dim)
+    N = len(centers_phi)
+
+    texture_field = np.zeros((n_phi, n_z))
+
+    if N == 0:
+        return texture_field
+
+    dphi = phi[1] - phi[0] if n_phi > 1 else 2 * np.pi / 180
+    dz = z_dim[1] - z_dim[0] if n_z > 1 else z_dim[-1] - z_dim[0]
+
+    # Радиус влияния в индексах (сколько узлов покрывает лунка)
+    m_phi = int(np.ceil((b / R) / dphi)) + 1
+    m_z = int(np.ceil(a / abs(dz))) + 1
+
+    # Предвычисляем обратные величины
+    inv_b_R = R / b
+    inv_a = 1.0 / a
+
+    phi_0 = phi[0]
+    z_0 = z_dim[0]
+
+    for k in range(N):
+        # Индекс центра лунки на сетке
+        i0 = int(round((centers_phi[k] - phi_0) / dphi)) % n_phi
+        j0 = int(round((centers_z[k] - z_0) / dz))
+
+        # Обходим только локальный патч вокруг лунки
+        for di in range(-m_phi, m_phi + 1):
+            i = (i0 + di) % n_phi  # периодичность по φ!
+
+            d_phi = phi[i] - centers_phi[k]
+            # wrap to [-π, π]
+            if d_phi > np.pi:
+                d_phi -= 2 * np.pi
+            elif d_phi < -np.pi:
+                d_phi += 2 * np.pi
+
+            for dj in range(-m_z, m_z + 1):
+                j = j0 + dj
+                if j < 0 or j >= n_z:
+                    continue
+
+                d_z = z_dim[j] - centers_z[k]
+                r_sq = (d_phi * inv_b_R)**2 + (d_z * inv_a)**2
+
+                if r_sq <= 1.0:
+                    texture_field[i, j] += h_depth_star * np.sqrt(1.0 - r_sq)
+
+    return texture_field
+
+
+@njit(cache=True)
 def _compute_texture_field_numba(
     phi: np.ndarray,
     Z: np.ndarray,
@@ -131,6 +216,8 @@ def _compute_texture_field_numba(
     """
     Вычислить поле текстуры на сетке (Numba-ускоренно).
 
+    ОБЁРТКА для совместимости: конвертирует Z в z_dim и вызывает scatter.
+
     Args:
         phi: углы сетки [0, 2π), shape (n_phi,)
         Z: осевые координаты [-1, 1], shape (n_z,)
@@ -144,34 +231,16 @@ def _compute_texture_field_numba(
     Returns:
         texture_field: shape (n_phi, n_z)
     """
-    n_phi = len(phi)
+    # Конвертируем безразмерные Z в размерные z_dim
     n_z = len(Z)
-    N = len(centers_phi)
+    z_dim = np.empty(n_z)
+    half_L = L / 2.0
+    for j in range(n_z):
+        z_dim[j] = Z[j] * half_L
 
-    texture_field = np.zeros((n_phi, n_z))
-
-    for i in range(n_phi):
-        for j in range(n_z):
-            # Размерная z-координата текущей точки
-            z_dim = Z[j] * (L / 2)  # Z ∈ [-1, 1] → z ∈ [-L/2, L/2]
-
-            for k in range(N):
-                # Разность углов с учётом периодичности
-                d_phi = _wrap_to_pi(phi[i] - centers_phi[k])
-
-                # Разность по z (размерная)
-                d_z = z_dim - centers_z[k]
-
-                # Нормированное расстояние до центра лунки
-                # r² = (Δφ·R/b)² + (Δz/a)²
-                r_sq = (d_phi * R / b)**2 + (d_z / a)**2
-
-                if r_sq <= 1.0:
-                    # Внутри лунки: эллипсоидальный профиль
-                    delta_H = h_depth_star * np.sqrt(1.0 - r_sq)
-                    texture_field[i, j] += delta_H
-
-    return texture_field
+    return _compute_texture_field_scatter(
+        phi, z_dim, centers_phi, centers_z, R, a, b, h_depth_star
+    )
 
 
 def generate_regular_centers(

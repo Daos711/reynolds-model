@@ -532,6 +532,9 @@ class ReynoldsSolver:
         P_max = np.max(P)
         p_max = P_max * self.config.pressure_scale
 
+        # Определяем метод
+        method = "SOR_flow_factors" if use_roughness else "SOR"
+
         return ReynoldsResult(
             phi=phi,
             Z=Z,
@@ -544,6 +547,7 @@ class ReynoldsSolver:
             converged=converged,
             iterations=iterations,
             residual=residual,
+            method=method,
             use_roughness=use_roughness,
             phi_x=phi_x,
             phi_z=phi_z,
