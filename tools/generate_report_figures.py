@@ -68,7 +68,7 @@ MU_BY_TEMP = {40: 0.098, 50: 0.057, 60: 0.037, 70: 0.025}
 FAST_MODE = False
 
 
-def create_config(c=BASE_C, epsilon=BASE_EPSILON, phi0=np.radians(135),
+def create_config(c=BASE_C, epsilon=BASE_EPSILON, phi0=0.0,
                   n_rpm=BASE_N_RPM, mu=BASE_MU, n_phi=180, n_z=50):
     """Создать конфигурацию подшипника."""
     return BearingConfig(
@@ -297,7 +297,7 @@ def generate_stage4_figures():
     Cxx_list, Cxy_list, Cyx_list, Cyy_list = [], [], [], []
 
     base_config = create_config(epsilon=0.5)  # базовая конфигурация
-    phi0 = np.radians(135)
+    phi0 = 0.0  # стандартное положение (h_min при φ=π)
 
     for eps in eps_values:
         try:
