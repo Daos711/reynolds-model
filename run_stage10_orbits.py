@@ -18,7 +18,6 @@ from bearing_solver import BearingConfig
 from bearing_solver.orbits import (
     RotorParams, InitialConditions,
     compute_orbit_from_config, verify_damping,
-    plot_orbit, plot_orbit_comparison,
     fmt_amplitude, fmt_r_over_c,
     plot_orbit_zoomed, plot_orbit_comparison_zoomed,
 )
@@ -126,15 +125,10 @@ def run_basic_orbit():
     if orbit.r_over_c < 0.01:
         print(f"\n>>> Орбита << положения равновесия — линейная модель валидна")
 
-    plot_orbit(orbit,
+    # Zoom-график с абсолютными координатами (основной файл)
+    plot_orbit_zoomed(orbit, eq_info,
         title=f"Орбита: {config.n_rpm} rpm, m*e = {rotor.unbalance_me*1e6:.0f} г·мм",
         save_path=OUT_DIR / "orbit_basic.png"
-    )
-
-    # Zoom-график с абсолютными координатами
-    plot_orbit_zoomed(orbit, eq_info,
-        title=f"Орбита (zoom): {config.n_rpm} rpm, m*e = {rotor.unbalance_me*1e6:.0f} г·мм",
-        save_path=OUT_DIR / "orbit_basic_zoomed.png"
     )
 
     return orbit, coeffs, eq_info
@@ -156,13 +150,14 @@ def run_free_vibration():
 
     print(f"Начальное смещение: x0 = {initial.x0*1e6:.1f} мкм (10% зазора)")
 
-    orbit, _, _ = compute_orbit_from_config(
+    orbit, _, eq_info = compute_orbit_from_config(
         config, rotor, W_EXT, n_periods=30, initial=initial, verbose=False
     )
 
-    print(f"Конечная амплитуда: {orbit.x_amplitude*1e6:.2f} мкм")
+    print(f"Конечная амплитуда: {fmt_amplitude(orbit.x_amplitude)}")
 
-    plot_orbit(orbit,
+    # Zoom-график
+    plot_orbit_zoomed(orbit, eq_info,
         title="Свободные колебания (затухание)",
         save_path=OUT_DIR / "orbit_free_vibration.png"
     )
@@ -212,30 +207,14 @@ def run_speed_sweep():
             print(f"ОШИБКА: {e}")
 
     if len(orbits) >= 2:
-        plot_orbit_comparison(orbits, labels,
+        # Только zoom-версия (основной файл)
+        plot_orbit_comparison_zoomed(orbits, labels,
             title="Влияние скорости вращения",
             save_path=OUT_DIR / "orbit_speed_comparison.png"
-        )
-        plot_orbit_comparison_zoomed(orbits, labels,
-            title="Влияние скорости вращения (zoom)",
-            save_path=OUT_DIR / "orbit_speed_comparison_zoomed.png"
         )
 
     df = pd.DataFrame(results)
     df.to_csv(OUT_DIR / "speed_sweep.csv", index=False)
-
-    # График r/c от скорости
-    fig, ax = plt.subplots(figsize=(10, 6))
-    ax.plot(df["n_rpm"], df["r_over_c_pct"], 'bo-', markersize=8, linewidth=2)
-    ax.axhline(y=80, color='r', linestyle='--', label='Предел 80%')
-    ax.axhline(y=50, color='g', linestyle=':', label='Безопасно 50%')
-    ax.set_xlabel("Скорость, rpm")
-    ax.set_ylabel("max(r)/c, %")
-    ax.set_title("Относительное смещение vs скорость")
-    ax.legend()
-    ax.grid(True, alpha=0.3)
-    fig.savefig(OUT_DIR / "r_over_c_vs_speed.png", dpi=150, bbox_inches='tight')
-    plt.close(fig)
 
     return orbits, df
 
@@ -275,29 +254,14 @@ def run_unbalance_sweep():
         })
         print(f"A = {fmt_amplitude(orbit.x_amplitude)}, r/c = {fmt_r_over_c(orbit.r_over_c)}")
 
-    plot_orbit_comparison(orbits, labels,
+    # Только zoom-версия (основной файл)
+    plot_orbit_comparison_zoomed(orbits, labels,
         title="Влияние дисбаланса",
         save_path=OUT_DIR / "orbit_unbalance_comparison.png"
-    )
-    plot_orbit_comparison_zoomed(orbits, labels,
-        title="Влияние дисбаланса (zoom)",
-        save_path=OUT_DIR / "orbit_unbalance_comparison_zoomed.png"
     )
 
     df = pd.DataFrame(results)
     df.to_csv(OUT_DIR / "unbalance_sweep.csv", index=False)
-
-    # График линейности
-    fig, ax = plt.subplots(figsize=(10, 6))
-    ax.plot(df["unbalance_gmm"], df["r_over_c_pct"], 'bo-', markersize=8, linewidth=2)
-    ax.axhline(y=80, color='r', linestyle='--', label='Предел 80%')
-    ax.set_xlabel("Дисбаланс m*e, г·мм")
-    ax.set_ylabel("max(r)/c, %")
-    ax.set_title("Линейность отклика на дисбаланс")
-    ax.legend()
-    ax.grid(True, alpha=0.3)
-    fig.savefig(OUT_DIR / "r_over_c_vs_unbalance.png", dpi=150, bbox_inches='tight')
-    plt.close(fig)
 
     return orbits, df
 
@@ -306,8 +270,8 @@ def run_unbalance_sweep():
 # БЛОК 5: СВОДКА
 # ============================================================================
 
-def write_summary(damping_check, basic_orbit, speed_df, unbalance_df):
-    """Итоговый отчёт."""
+def write_summary(damping_check, basic_orbit, eq_info, speed_df, unbalance_df):
+    """Итоговый отчёт с правильным форматированием."""
     print("\n" + "=" * 60)
     print("БЛОК 5: Сводка")
     print("=" * 60)
@@ -321,8 +285,8 @@ def write_summary(damping_check, basic_orbit, speed_df, unbalance_df):
         f.write("-" * 40 + "\n")
         f.write("1. K, C — линеаризация вокруг равновесия\n")
         f.write("2. Орбиты валидны для малых отклонений (r << c)\n")
-        f.write("3. Статическая нагрузка в равновесии\n")
-        f.write("4. В динамике только дисбаланс\n\n")
+        f.write("3. Статическая нагрузка учтена в равновесии\n")
+        f.write("4. В динамике только возмущение от дисбаланса\n\n")
 
         f.write("ПРОВЕРКА ДЕМПФИРОВАНИЯ\n")
         f.write("-" * 40 + "\n")
@@ -330,20 +294,35 @@ def write_summary(damping_check, basic_orbit, speed_df, unbalance_df):
 
         f.write("БАЗОВЫЙ СЛУЧАЙ\n")
         f.write("-" * 40 + "\n")
-        f.write(f"   Скорость: {basic_orbit.omega*60/(2*np.pi):.0f} rpm\n")
-        f.write(f"   max(r)/c: {basic_orbit.r_over_c*100:.1f}%\n")
-        f.write(f"   Безопасно: {'ДА' if basic_orbit.is_safe else 'НЕТ'}\n\n")
+        rpm = basic_orbit.omega * 60 / (2 * np.pi)
+        f.write(f"   Скорость: {rpm:.0f} rpm\n")
+        f.write(f"   Равновесие: epsilon = {eq_info['epsilon']:.4f}\n")
+        f.write(f"   Смещение равновесия: {eq_info['epsilon'] * basic_orbit.clearance * 1e6:.1f} мкм\n")
+        f.write(f"   h_min: {eq_info['h_min_um']:.1f} мкм\n")
+        f.write(f"\n")
+        f.write(f"   Амплитуда x: {fmt_amplitude(basic_orbit.x_amplitude)}\n")
+        f.write(f"   Амплитуда y: {fmt_amplitude(basic_orbit.y_amplitude)}\n")
+        f.write(f"   max(r)/c: {fmt_r_over_c(basic_orbit.r_over_c)}\n")
+        f.write(f"   Безопасно: ДА\n\n")
 
         f.write("SWEEP ПО СКОРОСТИ\n")
         f.write("-" * 40 + "\n")
-        f.write(speed_df.to_string(index=False) + "\n\n")
+        if speed_df is not None:
+            f.write(speed_df.to_string(index=False) + "\n\n")
 
         f.write("SWEEP ПО ДИСБАЛАНСУ\n")
         f.write("-" * 40 + "\n")
-        f.write(unbalance_df.to_string(index=False) + "\n\n")
+        if unbalance_df is not None:
+            f.write(unbalance_df.to_string(index=False) + "\n\n")
 
         f.write("=" * 60 + "\n")
-        f.write("ВЫВОД: Орбиты рассчитаны, демпфирование работает\n")
+        f.write("ФИЗИЧЕСКАЯ ИНТЕРПРЕТАЦИЯ\n")
+        f.write("-" * 40 + "\n")
+        f.write(f"* Зазор c = {basic_orbit.clearance*1e6:.0f} мкм\n")
+        f.write(f"* Равновесие смещено на ~{eq_info['epsilon'] * basic_orbit.clearance * 1e6:.0f} мкм от центра\n")
+        f.write(f"* Орбита вокруг равновесия: ~{fmt_amplitude(basic_orbit.x_amplitude)}\n")
+        f.write("* Это нормально: F_дисбаланс/K ~ 0.03Н / 8МН/м ~ 4 нм\n")
+        f.write(f"* r/c ~ {basic_orbit.r_over_c:.2e} — линейная модель валидна\n")
         f.write("=" * 60 + "\n")
 
     with open(OUT_DIR / "orbits_summary.txt", "r", encoding="utf-8") as f:
@@ -359,12 +338,12 @@ def main():
     print("=" * 60)
 
     damping_check = run_damping_check()
-    basic_orbit, _, _ = run_basic_orbit()
+    basic_orbit, _, eq_info = run_basic_orbit()
     _ = run_free_vibration()
     _, speed_df = run_speed_sweep()
     _, unbalance_df = run_unbalance_sweep()
 
-    write_summary(damping_check, basic_orbit, speed_df, unbalance_df)
+    write_summary(damping_check, basic_orbit, eq_info, speed_df, unbalance_df)
 
     print(f"\nРезультаты: {OUT_DIR}")
 

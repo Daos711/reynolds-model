@@ -761,3 +761,58 @@ def plot_orbit_comparison_zoomed(orbits: list, labels: list,
         plt.close(fig)
 
     return fig
+
+
+def plot_orbit_overview(orbit: OrbitResult, eq_info: dict,
+                        title: str = "Положение вала в подшипнике",
+                        save_path: Optional[str] = None):
+    """
+    Показать где вал находится в подшипнике (не орбиту!).
+
+    Используется для понимания общей картины: насколько вал смещён
+    от центра подшипника в положении равновесия.
+    """
+    fig, ax = plt.subplots(figsize=(8, 8))
+
+    c = orbit.clearance
+    epsilon = eq_info.get("epsilon", 0.5)
+    phi0_rad = np.radians(eq_info.get("phi0_deg", 90))
+
+    # Граница зазора
+    theta = np.linspace(0, 2*np.pi, 100)
+    ax.plot(c*1e6*np.cos(theta), c*1e6*np.sin(theta),
+            'r-', linewidth=3, label='Граница зазора')
+
+    # Положение равновесия
+    x_eq = -epsilon * c * np.cos(phi0_rad) * 1e6
+    y_eq = -epsilon * c * np.sin(phi0_rad) * 1e6
+
+    ax.plot(x_eq, y_eq, 'ko', markersize=15, label=f'Центр вала (epsilon={epsilon:.3f})')
+
+    # Вал (круг радиусом условно 15% зазора для наглядности)
+    r_shaft_vis = 0.15 * c * 1e6
+    ax.add_patch(plt.Circle((x_eq, y_eq), r_shaft_vis,
+                            color='blue', alpha=0.5, label='Вал (схематично)'))
+
+    # h_min
+    ax.annotate(f'h_min = {eq_info.get("h_min_um", (1-epsilon)*c*1e6):.1f} мкм',
+                xy=(x_eq + r_shaft_vis*0.7, y_eq - r_shaft_vis*0.7),
+                fontsize=10)
+
+    ax.set_xlabel('x, мкм')
+    ax.set_ylabel('y, мкм')
+    ax.set_title(title)
+    ax.axis('equal')
+    ax.grid(True, alpha=0.3)
+    ax.legend(loc='upper right')
+
+    # Установить пределы чуть больше зазора
+    lim = c * 1e6 * 1.2
+    ax.set_xlim(-lim, lim)
+    ax.set_ylim(-lim, lim)
+
+    if save_path:
+        fig.savefig(save_path, dpi=150, bbox_inches='tight')
+        plt.close(fig)
+
+    return fig
