@@ -83,8 +83,19 @@ from .orbits import (
     plot_orbit_zoomed,
     plot_orbit_comparison_zoomed,
 )
+from .parametric import (
+    ParametricConfig,
+    TextureFactors,
+    ParametricResult,
+    GridTexturedFilmModel,
+    run_single_case,
+    run_parametric_study,
+    fit_rsm_model,
+    find_optimum,
+    local_refinement,
+)
 
-__version__ = "0.7.0"
+__version__ = "0.8.0"
 
 __all__ = [
     # Конфигурация
@@ -164,4 +175,14 @@ __all__ = [
     "fmt_r_over_c",
     "plot_orbit_zoomed",
     "plot_orbit_comparison_zoomed",
+    # Этап 11: Параметрический анализ
+    "ParametricConfig",
+    "TextureFactors",
+    "ParametricResult",
+    "GridTexturedFilmModel",
+    "run_single_case",
+    "run_parametric_study",
+    "fit_rsm_model",
+    "find_optimum",
+    "local_refinement",
 ]
