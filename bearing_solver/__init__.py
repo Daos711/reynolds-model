@@ -69,6 +69,16 @@ from .validation import (
     create_gwynllyw_config,
     get_pressure_at_midplane,
 )
+from .orbits import (
+    RotorParams,
+    InitialConditions,
+    OrbitResult,
+    compute_orbit,
+    compute_orbit_from_config,
+    verify_damping,
+    plot_orbit,
+    plot_orbit_comparison,
+)
 
 __version__ = "0.7.0"
 
@@ -137,4 +147,13 @@ __all__ = [
     "create_patel_config",
     "create_gwynllyw_config",
     "get_pressure_at_midplane",
+    # Этап 10: Орбиты
+    "RotorParams",
+    "InitialConditions",
+    "OrbitResult",
+    "compute_orbit",
+    "compute_orbit_from_config",
+    "verify_damping",
+    "plot_orbit",
+    "plot_orbit_comparison",
 ]
