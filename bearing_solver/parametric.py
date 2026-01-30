@@ -152,6 +152,9 @@ class GridTexturedFilmModel(FilmModel):
     Лунки расположены в равномерной сетке N_phi × N_z.
     Форма лунок — эллипсоидальная.
 
+    SUBGRID-ПОДХОД: Когда лунки меньше ячеек сетки, вместо "рисования"
+    формы лунки добавляем эквивалентный объём в ячейку.
+
     H(φ, Z) = H_smooth(φ, Z) + ΔH*(φ, Z)
     """
 
@@ -178,6 +181,10 @@ class GridTexturedFilmModel(FilmModel):
         self._texture_field: Optional[np.ndarray] = None
         self._cached_phi: Optional[np.ndarray] = None
         self._cached_Z: Optional[np.ndarray] = None
+
+        # Диагностика
+        self._n_cells_added = 0
+        self._dH_max = 0.0
 
     def _generate_grid_centers(self) -> Tuple[np.ndarray, np.ndarray]:
         """Генерировать центры лунок для равномерной сетки."""
@@ -208,7 +215,16 @@ class GridTexturedFilmModel(FilmModel):
         return np.array(centers_phi), np.array(centers_z)
 
     def _compute_texture_field(self, phi: np.ndarray, Z: np.ndarray) -> np.ndarray:
-        """Вычислить поле текстуры."""
+        """
+        Вычислить поле текстуры методом SUBGRID.
+
+        Когда лунки меньше ячеек сетки, добавляем эквивалентный объём
+        лунки в ячейку, содержащую её центр.
+
+        Объём эллипсоидальной лунки: V = (2/3) × h × π × a × b
+        Площадь ячейки: A_cell = R × dφ × dz
+        Прибавка к H: dH = V / (A_cell × c)
+        """
         # Проверяем кеш
         if (self._texture_field is not None and
             self._cached_phi is not None and
@@ -226,30 +242,57 @@ class GridTexturedFilmModel(FilmModel):
         if self.N_cells == 0:
             return texture
 
-        # Размерные z-координаты
-        z_dim = Z * (self.config.L / 2)
+        config = self.config
+        factors = self.factors
 
-        a = self.factors.a
-        b = self.factors.b
-        R = self.config.R
+        # Параметры сетки
+        d_phi = phi[1] - phi[0] if n_phi > 1 else 2 * np.pi / n_phi
+        d_Z = Z[1] - Z[0] if n_z > 1 else 2.0 / n_z
 
-        # Добавляем каждую лунку
+        # Размерный шаг по z
+        dz_dim = d_Z * (config.L / 2)  # Z ∈ [-1, 1], так что dz = dZ × L/2
+
+        # Площадь одной ячейки сетки (на поверхности)
+        A_cell = config.R * d_phi * dz_dim  # м²
+
+        # Объём одной эллипсоидальной лунки
+        # Профиль: depth = h × sqrt(1 - r²), средняя глубина = (2/3)×h
+        V_dimple = (2.0 / 3.0) * factors.h * np.pi * factors.a * factors.b  # м³
+
+        # Эквивалентная прибавка к H (безразмерная) для одной лунки в ячейке
+        dH_per_dimple = V_dimple / (A_cell * config.c)
+
+        # Добавляем каждую лунку в соответствующую ячейку
+        n_added = 0
+
         for k in range(self.N_cells):
             phi_c = self.centers_phi[k]
-            z_c = self.centers_z[k]
+            z_c = self.centers_z[k]  # размерная, в метрах
 
-            for i in range(n_phi):
-                # Периодичность по φ
-                dphi = np.arctan2(np.sin(phi[i] - phi_c), np.cos(phi[i] - phi_c))
+            # Привести φ_c к диапазону сетки
+            phi_c_wrapped = phi_c % (2 * np.pi)
 
-                for j in range(n_z):
-                    dz = z_dim[j] - z_c
+            # Найти индекс ячейки по φ
+            i_phi = int(phi_c_wrapped / d_phi)
+            if i_phi >= n_phi:
+                i_phi = n_phi - 1
 
-                    # Нормированное расстояние
-                    r2 = (dphi * R / b)**2 + (dz / a)**2
+            # Найти индекс ячейки по Z
+            # z_c ∈ [-L/2, L/2], Z ∈ [-1, 1]
+            Z_c = z_c / (config.L / 2)  # перевести в безразмерные
+            i_z = int((Z_c + 1) / d_Z)
+            if i_z >= n_z:
+                i_z = n_z - 1
+            if i_z < 0:
+                i_z = 0
 
-                    if r2 <= 1.0:
-                        texture[i, j] += self.h_depth_star * np.sqrt(1.0 - r2)
+            # Добавить прибавку
+            texture[i_phi, i_z] += dH_per_dimple
+            n_added += 1
+
+        # Сохранить диагностику
+        self._n_cells_added = n_added
+        self._dH_max = texture.max() if n_added > 0 else 0.0
 
         # Кешируем
         self._texture_field = texture

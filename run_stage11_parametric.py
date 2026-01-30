@@ -433,10 +433,12 @@ def run_refinement(rsm_mu: dict, mode: str):
 # ============================================================================
 
 def test_single_point():
-    """Тестовый расчёт одной точки."""
+    """Тестовый расчёт одной точки с диагностикой текстуры."""
+    from bearing_solver import BearingConfig, solve_reynolds
+    from bearing_solver.parametric import GridTexturedFilmModel
 
     print("\n" + "=" * 60)
-    print("ТЕСТ: РАСЧЁТ ОДНОЙ ТОЧКИ")
+    print("ТЕСТ: РАСЧЁТ ОДНОЙ ТОЧКИ С ДИАГНОСТИКОЙ ТЕКСТУРЫ")
     print("=" * 60)
 
     # Центральная точка
@@ -448,7 +450,7 @@ def test_single_point():
         N_z=4,
     )
 
-    print(f"Параметры:")
+    print(f"\nПараметры текстуры:")
     print(f"  h = {factors.h*1e6:.1f} мкм")
     print(f"  a = {factors.a*1e6:.1f} мкм")
     print(f"  b = {factors.b*1e6:.1f} мкм")
@@ -460,7 +462,52 @@ def test_single_point():
     print(f"  gap_phi = {gap_phi*1e6:.1f} мкм")
     print(f"  gap_z = {gap_z*1e6:.1f} мкм")
     print(f"  valid = {factors.validate(BEARING_CONFIG.R, BEARING_CONFIG.B)}")
-    print(f"  fill_factor = {factors.get_fill_factor(BEARING_CONFIG.R, BEARING_CONFIG.B)*100:.1f}%")
+    print(f"  fill_factor = {factors.get_fill_factor(BEARING_CONFIG.R, BEARING_CONFIG.B)*100:.2f}%")
+
+    # Прямая проверка текстуры
+    print("\n--- Диагностика текстурного поля (SUBGRID) ---")
+
+    config = BearingConfig(
+        R=BEARING_CONFIG.R,
+        L=BEARING_CONFIG.B,
+        c=BEARING_CONFIG.c,
+        epsilon=BEARING_CONFIG.epsilon,
+        phi0=np.pi,
+        n_rpm=BEARING_CONFIG.n_rpm,
+        mu=BEARING_CONFIG.mu,
+        n_phi=90,
+        n_z=30,
+    )
+
+    film_model = GridTexturedFilmModel(config, factors)
+
+    # Получаем сетку
+    phi, Z, d_phi, d_Z = config.create_grid()
+
+    # Вычисляем H с текстурой
+    H_textured = film_model.H(phi, Z)
+    H_smooth = film_model._smooth_model.H(phi, Z)
+    texture_field = H_textured - H_smooth
+
+    # Статистика
+    print(f"  Сетка: {len(phi)}×{len(Z)} = {len(phi)*len(Z)} ячеек")
+    print(f"  d_phi = {np.degrees(d_phi):.2f}°, dz = {d_Z * config.L/2 * 1e3:.3f} мм")
+    print(f"  Размер ячейки: {config.R * d_phi * 1e3:.3f} мм × {d_Z * config.L/2 * 1e3:.3f} мм")
+    print(f"  Размер лунки: {2*factors.b*1e3:.3f} мм × {2*factors.a*1e3:.3f} мм")
+    print(f"  Отношение (лунка/ячейка): {2*factors.b/(config.R * d_phi):.4f} × {2*factors.a/(d_Z * config.L/2):.4f}")
+    print(f"  Лунок добавлено: {film_model._n_cells_added}")
+    print(f"  dH_max (безразм.): {film_model._dH_max:.6f}")
+    print(f"  dH_max (размерн.): {film_model._dH_max * config.c * 1e6:.3f} мкм")
+    print(f"  texture_field: min={texture_field.min():.6f}, max={texture_field.max():.6f}")
+    print(f"  H_smooth: min={H_smooth.min():.4f}, max={H_smooth.max():.4f}")
+    print(f"  H_textured: min={H_textured.min():.4f}, max={H_textured.max():.4f}")
+
+    # Объём одной лунки
+    V_dimple = (2.0/3.0) * factors.h * np.pi * factors.a * factors.b
+    print(f"\n  Объём одной лунки: V = {V_dimple*1e9:.6f} мм³")
+
+    # Полный расчёт
+    print("\n--- Полный расчёт (с поиском phi0) ---")
 
     result = run_single_case(
         BEARING_CONFIG, factors,
@@ -479,6 +526,31 @@ def test_single_point():
     print(f"  h_min = {result.h_min*1e6:.2f} мкм")
     print(f"  calc_time = {result.calc_time:.1f} s")
     print(f"  converged = {result.converged}")
+
+    # Сравнение с гладкой поверхностью
+    print("\n--- Сравнение с гладкой поверхностью ---")
+    from bearing_solver import SmoothFilmModel
+    from bearing_solver.forces import compute_forces, compute_friction
+
+    config_smooth = BearingConfig(
+        R=BEARING_CONFIG.R,
+        L=BEARING_CONFIG.B,
+        c=BEARING_CONFIG.c,
+        epsilon=BEARING_CONFIG.epsilon,
+        phi0=result.phi0_equilibrium,
+        n_rpm=BEARING_CONFIG.n_rpm,
+        mu=BEARING_CONFIG.mu,
+        n_phi=90,
+        n_z=30,
+    )
+    sol_smooth = solve_reynolds(config_smooth, film_model=SmoothFilmModel(config_smooth))
+    forces_smooth = compute_forces(sol_smooth, config_smooth)
+    friction_smooth = compute_friction(sol_smooth, config_smooth, forces_smooth)
+
+    print(f"  Гладкая: W = {forces_smooth.W:.1f} Н, mu = {friction_smooth.mu_friction:.6f}")
+    print(f"  С текст: W = {result.W:.1f} Н, mu = {result.mu_friction:.6f}")
+    print(f"  Изменение W: {(result.W - forces_smooth.W)/forces_smooth.W*100:+.2f}%")
+    print(f"  Изменение mu: {(result.mu_friction - friction_smooth.mu_friction)/friction_smooth.mu_friction*100:+.2f}%")
 
     return result
 
