@@ -19,6 +19,8 @@ from bearing_solver.orbits import (
     RotorParams, InitialConditions,
     compute_orbit_from_config, verify_damping,
     plot_orbit, plot_orbit_comparison,
+    fmt_amplitude, fmt_r_over_c,
+    plot_orbit_zoomed, plot_orbit_comparison_zoomed,
 )
 
 OUT_DIR = Path("results/stage10_orbits")
@@ -116,14 +118,23 @@ def run_basic_orbit():
     print(f"C: Cxx={coeffs.Cxx/1e3:.2f}, Cyy={coeffs.Cyy/1e3:.2f} кН·с/м")
 
     print(f"\nОрбита ({orbit.n_periods_total:.0f} оборотов):")
-    print(f"  Амплитуда x: {orbit.x_amplitude*1e6:.2f} мкм")
-    print(f"  Амплитуда y: {orbit.y_amplitude*1e6:.2f} мкм")
-    print(f"  max(r)/c = {orbit.r_over_c:.3f} ({orbit.r_over_c*100:.1f}%)")
+    print(f"  Амплитуда x: {fmt_amplitude(orbit.x_amplitude)}")
+    print(f"  Амплитуда y: {fmt_amplitude(orbit.y_amplitude)}")
+    print(f"  max(r)/c = {fmt_r_over_c(orbit.r_over_c)}")
     print(f"  Безопасно: {'ДА' if orbit.is_safe else 'НЕТ'}")
+
+    if orbit.r_over_c < 0.01:
+        print(f"\n>>> Орбита << положения равновесия — линейная модель валидна")
 
     plot_orbit(orbit,
         title=f"Орбита: {config.n_rpm} rpm, m*e = {rotor.unbalance_me*1e6:.0f} г·мм",
         save_path=OUT_DIR / "orbit_basic.png"
+    )
+
+    # Zoom-график с абсолютными координатами
+    plot_orbit_zoomed(orbit, eq_info,
+        title=f"Орбита (zoom): {config.n_rpm} rpm, m*e = {rotor.unbalance_me*1e6:.0f} г·мм",
+        save_path=OUT_DIR / "orbit_basic_zoomed.png"
     )
 
     return orbit, coeffs, eq_info
@@ -188,14 +199,14 @@ def run_speed_sweep():
             results.append({
                 "n_rpm": n_rpm,
                 "epsilon": eq_info["epsilon"],
-                "x_amp_um": orbit.x_amplitude * 1e6,
-                "y_amp_um": orbit.y_amplitude * 1e6,
+                "x_amp_nm": orbit.x_amplitude * 1e9,  # в нанометрах
+                "y_amp_nm": orbit.y_amplitude * 1e9,
                 "r_over_c_pct": orbit.r_over_c * 100,
                 "Kxx_MN_m": coeffs.Kxx / 1e6,
                 "Cxx_kNs_m": coeffs.Cxx / 1e3,
                 "is_safe": orbit.is_safe,
             })
-            print(f"r/c = {orbit.r_over_c*100:.1f}%")
+            print(f"A = {fmt_amplitude(orbit.x_amplitude)}, r/c = {fmt_r_over_c(orbit.r_over_c)}")
 
         except Exception as e:
             print(f"ОШИБКА: {e}")
@@ -204,6 +215,10 @@ def run_speed_sweep():
         plot_orbit_comparison(orbits, labels,
             title="Влияние скорости вращения",
             save_path=OUT_DIR / "orbit_speed_comparison.png"
+        )
+        plot_orbit_comparison_zoomed(orbits, labels,
+            title="Влияние скорости вращения (zoom)",
+            save_path=OUT_DIR / "orbit_speed_comparison_zoomed.png"
         )
 
     df = pd.DataFrame(results)
@@ -253,16 +268,20 @@ def run_unbalance_sweep():
 
         results.append({
             "unbalance_gmm": me_gmm,
-            "x_amp_um": orbit.x_amplitude * 1e6,
-            "y_amp_um": orbit.y_amplitude * 1e6,
+            "x_amp_nm": orbit.x_amplitude * 1e9,  # в нанометрах
+            "y_amp_nm": orbit.y_amplitude * 1e9,
             "r_over_c_pct": orbit.r_over_c * 100,
             "is_safe": orbit.is_safe,
         })
-        print(f"r/c = {orbit.r_over_c*100:.1f}%")
+        print(f"A = {fmt_amplitude(orbit.x_amplitude)}, r/c = {fmt_r_over_c(orbit.r_over_c)}")
 
     plot_orbit_comparison(orbits, labels,
         title="Влияние дисбаланса",
         save_path=OUT_DIR / "orbit_unbalance_comparison.png"
+    )
+    plot_orbit_comparison_zoomed(orbits, labels,
+        title="Влияние дисбаланса (zoom)",
+        save_path=OUT_DIR / "orbit_unbalance_comparison_zoomed.png"
     )
 
     df = pd.DataFrame(results)

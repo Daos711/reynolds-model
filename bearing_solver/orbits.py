@@ -16,6 +16,42 @@ import matplotlib.pyplot as plt
 from .dynamics import DynamicCoefficients
 
 
+# ============================================================================
+# ФУНКЦИИ ФОРМАТИРОВАНИЯ
+# ============================================================================
+
+def fmt_amplitude(val_m: float) -> str:
+    """
+    Форматировать амплитуду с автовыбором единиц.
+
+    < 0.1 мкм → показывать в нм
+    >= 0.1 мкм → показывать в мкм
+    """
+    val_um = val_m * 1e6
+    if abs(val_um) < 0.1:
+        return f"{val_um * 1000:.2f} нм"
+    elif abs(val_um) < 10:
+        return f"{val_um:.4f} мкм"
+    else:
+        return f"{val_um:.2f} мкм"
+
+
+def fmt_r_over_c(ratio: float) -> str:
+    """
+    Форматировать r/c с достаточной точностью.
+
+    < 0.01% → научная нотация
+    >= 0.01% → обычный формат
+    """
+    pct = ratio * 100
+    if pct < 0.01:
+        return f"{pct:.2e}%"
+    elif pct < 1:
+        return f"{pct:.4f}%"
+    else:
+        return f"{pct:.2f}%"
+
+
 @dataclass
 class RotorParams:
     """Параметры ротора."""
@@ -438,6 +474,284 @@ def plot_orbit_comparison(orbits: list, labels: list,
     ax2.set_xticklabels(labels, rotation=45, ha='right')
     ax2.legend()
     ax2.grid(True, alpha=0.3, axis='y')
+
+    fig.suptitle(title, fontsize=14, fontweight='bold')
+    fig.tight_layout()
+
+    if save_path:
+        fig.savefig(save_path, dpi=150, bbox_inches='tight')
+        plt.close(fig)
+
+    return fig
+
+
+def plot_orbit_zoomed(orbit: OrbitResult,
+                      eq_info: dict,
+                      title: str = "Орбита ротора",
+                      save_path: Optional[str] = None):
+    """
+    Построить графики орбиты с zoom и абсолютными координатами.
+
+    Включает:
+    1. Орбита в абсолютных координатах (видно положение равновесия)
+    2. Zoom на саму орбиту (автомасштаб)
+    3. x(t), y(t) с адекватным масштабом
+    4. Информационный блок
+    """
+    fig = plt.figure(figsize=(16, 10))
+
+    # Получаем данные
+    i_ss = orbit.steady_state_start
+    c = orbit.clearance
+
+    # Положение равновесия (из eq_info)
+    epsilon = eq_info.get("epsilon", 0.5)
+    phi0_rad = np.radians(eq_info.get("phi0_deg", 90))
+
+    # Абсолютные координаты равновесия
+    x_eq = -epsilon * c * np.cos(phi0_rad)
+    y_eq = -epsilon * c * np.sin(phi0_rad)
+
+    # Абсолютные координаты орбиты
+    x_abs = x_eq + orbit.x
+    y_abs = y_eq + orbit.y
+
+    # === 1. Орбита в абсолютных координатах (полный вид) ===
+    ax1 = fig.add_subplot(2, 3, 1)
+
+    # Граница зазора
+    theta = np.linspace(0, 2*np.pi, 100)
+    ax1.plot(c*1e6*np.cos(theta), c*1e6*np.sin(theta),
+             'r--', linewidth=2, label='Зазор')
+    ax1.plot(0.5*c*1e6*np.cos(theta), 0.5*c*1e6*np.sin(theta),
+             'g:', linewidth=1, label='50% зазора')
+
+    # Положение равновесия
+    ax1.plot(x_eq*1e6, y_eq*1e6, 'ko', markersize=10, label='Равновесие')
+
+    # Орбита (установившаяся)
+    ax1.plot(x_abs[i_ss:]*1e6, y_abs[i_ss:]*1e6, 'b-', linewidth=1.5, label='Орбита')
+
+    ax1.set_xlabel('x, мкм')
+    ax1.set_ylabel('y, мкм')
+    ax1.set_title('Абсолютные координаты')
+    ax1.axis('equal')
+    ax1.grid(True, alpha=0.3)
+    ax1.legend(fontsize=8)
+
+    # === 2. ZOOM на орбиту (автомасштаб) ===
+    ax2 = fig.add_subplot(2, 3, 2)
+
+    # Определяем масштаб по реальным данным
+    x_ss = orbit.x[i_ss:]
+    y_ss = orbit.y[i_ss:]
+
+    r_max = max(np.max(np.abs(x_ss)), np.max(np.abs(y_ss)))
+
+    # Выбираем единицы для zoom
+    if r_max * 1e6 < 0.1:  # < 0.1 мкм → нанометры
+        scale = 1e9
+        unit = "нм"
+    else:
+        scale = 1e6
+        unit = "мкм"
+
+    # Орбита в выбранных единицах
+    ax2.plot(x_ss * scale, y_ss * scale, 'b-', linewidth=1.5)
+    ax2.plot(x_ss[0] * scale, y_ss[0] * scale, 'go', markersize=8, label='Начало')
+    ax2.plot(x_ss[-1] * scale, y_ss[-1] * scale, 'ro', markersize=6, label='Конец')
+
+    # Автомасштаб с запасом 20%
+    lim = r_max * scale * 1.2
+    if lim > 0:
+        ax2.set_xlim(-lim, lim)
+        ax2.set_ylim(-lim, lim)
+
+    ax2.set_xlabel(f'x, {unit}')
+    ax2.set_ylabel(f'y, {unit}')
+    ax2.set_title(f'ZOOM орбиты (масштаб: {unit})')
+    ax2.axis('equal')
+    ax2.grid(True, alpha=0.3)
+    ax2.legend(fontsize=8)
+
+    # === 3. x(t), y(t) с автомасштабом ===
+    ax3 = fig.add_subplot(2, 3, 3)
+
+    t_ms = orbit.t * 1000
+
+    ax3.plot(t_ms, orbit.x * scale, 'b-', linewidth=0.8, label='x(t)')
+    ax3.plot(t_ms, orbit.y * scale, 'r-', linewidth=0.8, label='y(t)')
+
+    ax3.set_xlabel('Время, мс')
+    ax3.set_ylabel(f'Смещение, {unit}')
+    ax3.set_title('Колебания x(t), y(t)')
+    ax3.grid(True, alpha=0.3)
+    ax3.legend()
+
+    # === 4. r(t) с автомасштабом ===
+    ax4 = fig.add_subplot(2, 3, 4)
+
+    r = np.sqrt(orbit.x**2 + orbit.y**2)
+    ax4.plot(t_ms, r * scale, 'b-', linewidth=0.8)
+
+    ax4.set_xlabel('Время, мс')
+    ax4.set_ylabel(f'r = sqrt(x^2+y^2), {unit}')
+    ax4.set_title('Радиальное смещение')
+    ax4.grid(True, alpha=0.3)
+
+    # === 5. Сравнение масштабов (столбчатая) ===
+    ax5 = fig.add_subplot(2, 3, 5)
+
+    categories = ['Зазор c', 'Положение\nравновесия', 'Амплитуда\nорбиты']
+    values_um = [
+        c * 1e6,
+        epsilon * c * 1e6,
+        orbit.x_amplitude * 1e6
+    ]
+
+    colors_bar = ['red', 'orange', 'blue']
+    bars = ax5.bar(categories, values_um, color=colors_bar, alpha=0.7)
+
+    # Подписи значений
+    for bar, val in zip(bars, values_um):
+        height = bar.get_height()
+        if val < 0.1:
+            label = f"{val*1000:.2f} нм"
+        else:
+            label = f"{val:.2f} мкм"
+        ax5.annotate(label, xy=(bar.get_x() + bar.get_width()/2, height),
+                    xytext=(0, 3), textcoords="offset points",
+                    ha='center', va='bottom', fontsize=9)
+
+    ax5.set_ylabel('мкм')
+    ax5.set_title('Сравнение масштабов')
+    ax5.set_yscale('log')  # логарифмическая шкала!
+    ax5.grid(True, alpha=0.3, axis='y')
+
+    # === 6. Информация ===
+    ax6 = fig.add_subplot(2, 3, 6)
+    ax6.axis('off')
+
+    rpm = orbit.omega * 60 / (2 * np.pi)
+
+    info = f"""
+ПАРАМЕТРЫ
+-----------------------
+Скорость: {rpm:.0f} rpm
+Масса ротора: {orbit.mass:.2f} кг
+Зазор: {c*1e6:.0f} мкм
+
+РАВНОВЕСИЕ
+-----------------------
+epsilon = {epsilon:.4f}
+Смещение: {epsilon*c*1e6:.1f} мкм от центра
+h_min = {(1-epsilon)*c*1e6:.1f} мкм
+
+ОРБИТА (установившийся режим)
+-----------------------
+Амплитуда x: {fmt_amplitude(orbit.x_amplitude)}
+Амплитуда y: {fmt_amplitude(orbit.y_amplitude)}
+Max r: {fmt_amplitude(orbit.max_displacement)}
+
+r/c = {fmt_r_over_c(orbit.r_over_c)}
+
+ВЫВОД
+-----------------------
+Орбита << положения равновесия
+Линейная модель валидна
+    """
+
+    ax6.text(0.05, 0.95, info, transform=ax6.transAxes,
+             fontsize=10, verticalalignment='top', fontfamily='monospace',
+             bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.5))
+
+    fig.suptitle(title, fontsize=14, fontweight='bold')
+    fig.tight_layout()
+
+    if save_path:
+        fig.savefig(save_path, dpi=150, bbox_inches='tight')
+        plt.close(fig)
+
+    return fig
+
+
+def plot_orbit_comparison_zoomed(orbits: list, labels: list,
+                                  title: str = "Сравнение орбит",
+                                  save_path: Optional[str] = None):
+    """Сравнить орбиты с автомасштабом."""
+    fig, axes = plt.subplots(1, 3, figsize=(18, 5))
+    colors = plt.cm.tab10(np.linspace(0, 1, len(orbits)))
+
+    # Определяем общий масштаб
+    all_x = np.concatenate([o.x[o.steady_state_start:] for o in orbits])
+    all_y = np.concatenate([o.y[o.steady_state_start:] for o in orbits])
+    r_max = max(np.max(np.abs(all_x)), np.max(np.abs(all_y)))
+
+    if r_max * 1e6 < 0.1:
+        scale, unit = 1e9, "нм"
+    else:
+        scale, unit = 1e6, "мкм"
+
+    # === 1. Орбиты (zoom) ===
+    ax1 = axes[0]
+    for orbit, label, color in zip(orbits, labels, colors):
+        i_ss = orbit.steady_state_start
+        ax1.plot(orbit.x[i_ss:] * scale, orbit.y[i_ss:] * scale,
+                 '-', color=color, linewidth=1.5, label=label)
+
+    ax1.set_xlabel(f'x, {unit}')
+    ax1.set_ylabel(f'y, {unit}')
+    ax1.set_title(f'Орбиты (масштаб: {unit})')
+    ax1.axis('equal')
+    ax1.grid(True, alpha=0.3)
+    ax1.legend(fontsize=8)
+
+    # === 2. Амплитуды ===
+    ax2 = axes[1]
+    x_amps = [o.x_amplitude * scale for o in orbits]
+    y_amps = [o.y_amplitude * scale for o in orbits]
+
+    x_pos = np.arange(len(orbits))
+    width = 0.35
+
+    ax2.bar(x_pos - width/2, x_amps, width, label='x', color='blue', alpha=0.7)
+    ax2.bar(x_pos + width/2, y_amps, width, label='y', color='red', alpha=0.7)
+
+    ax2.set_xlabel('Кейс')
+    ax2.set_ylabel(f'Амплитуда, {unit}')
+    ax2.set_title('Амплитуды колебаний')
+    ax2.set_xticks(x_pos)
+    ax2.set_xticklabels(labels, rotation=45, ha='right')
+    ax2.legend()
+    ax2.grid(True, alpha=0.3, axis='y')
+
+    # === 3. r/c (логарифм если нужно) ===
+    ax3 = axes[2]
+    r_over_c_pct = [o.r_over_c * 100 for o in orbits]
+
+    bars = ax3.bar(x_pos, r_over_c_pct, color=[colors[i] for i in range(len(orbits))], alpha=0.7)
+
+    # Подписи
+    for bar, val in zip(bars, r_over_c_pct):
+        height = bar.get_height()
+        if val < 0.01:
+            label = f"{val:.2e}%"
+        else:
+            label = f"{val:.4f}%"
+        ax3.annotate(label, xy=(bar.get_x() + bar.get_width()/2, height),
+                    xytext=(0, 3), textcoords="offset points",
+                    ha='center', va='bottom', fontsize=8, rotation=45)
+
+    ax3.set_xlabel('Кейс')
+    ax3.set_ylabel('r/c, %')
+    ax3.set_title('Относительное смещение')
+    ax3.set_xticks(x_pos)
+    ax3.set_xticklabels(labels, rotation=45, ha='right')
+    ax3.grid(True, alpha=0.3, axis='y')
+
+    # Логарифмическая шкала если разброс большой
+    if max(r_over_c_pct) / (min(r_over_c_pct) + 1e-10) > 100:
+        ax3.set_yscale('log')
 
     fig.suptitle(title, fontsize=14, fontweight='bold')
     fig.tight_layout()

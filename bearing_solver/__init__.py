@@ -78,6 +78,10 @@ from .orbits import (
     verify_damping,
     plot_orbit,
     plot_orbit_comparison,
+    fmt_amplitude,
+    fmt_r_over_c,
+    plot_orbit_zoomed,
+    plot_orbit_comparison_zoomed,
 )
 
 __version__ = "0.7.0"
@@ -156,4 +160,8 @@ __all__ = [
     "verify_damping",
     "plot_orbit",
     "plot_orbit_comparison",
+    "fmt_amplitude",
+    "fmt_r_over_c",
+    "plot_orbit_zoomed",
+    "plot_orbit_comparison_zoomed",
 ]
