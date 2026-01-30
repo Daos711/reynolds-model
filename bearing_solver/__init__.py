@@ -57,6 +57,18 @@ from .roughness import (
     flow_factors_PC,
     compute_roughness_fields,
 )
+from .validation import (
+    PatelCase,
+    GwynllywCase,
+    PATEL_EXPERIMENTAL,
+    GWYNLLYW_REFERENCE,
+    run_patel_validation,
+    run_patel_validation_fixed_position,
+    run_gwynllyw_validation,
+    create_patel_config,
+    create_gwynllyw_config,
+    get_pressure_at_midplane,
+)
 
 __version__ = "0.7.0"
 
@@ -114,4 +126,15 @@ __all__ = [
     "build_Ra_bushing_field",
     "flow_factors_PC",
     "compute_roughness_fields",
+    # Этап 9: Валидация
+    "PatelCase",
+    "GwynllywCase",
+    "PATEL_EXPERIMENTAL",
+    "GWYNLLYW_REFERENCE",
+    "run_patel_validation",
+    "run_patel_validation_fixed_position",
+    "run_gwynllyw_validation",
+    "create_patel_config",
+    "create_gwynllyw_config",
+    "get_pressure_at_midplane",
 ]
