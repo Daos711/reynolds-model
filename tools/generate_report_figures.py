@@ -68,10 +68,11 @@ MU_BY_TEMP = {40: 0.098, 50: 0.057, 60: 0.037, 70: 0.025}
 FAST_MODE = False
 
 # Стили линий для сравнения гладкий vs текстура
+# Только цвет, без пунктира — все сплошные линии
 STYLES = {
     'smooth': {'color': 'blue', 'linestyle': '-', 'linewidth': 2, 'label': 'Гладкий'},
-    'regular': {'color': 'green', 'linestyle': '--', 'linewidth': 2, 'label': 'Regular'},
-    'phyllotaxis': {'color': 'red', 'linestyle': '-.', 'linewidth': 2, 'label': 'Phyllotaxis'},
+    'regular': {'color': 'green', 'linestyle': '-', 'linewidth': 2, 'label': 'Regular'},
+    'phyllotaxis': {'color': 'red', 'linestyle': '-', 'linewidth': 2, 'label': 'Phyllotaxis'},
 }
 
 # Базовые параметры текстуры для сравнения
@@ -784,11 +785,8 @@ def generate_stage8_figures():
 
         # Цвета по паттерну текстуры
         pattern_colors = {
-            'spiral': '#1f77b4',      # синий
-            'grid': '#2ca02c',         # зелёный
+            'regular': '#2ca02c',      # зелёный
             'phyllotaxis': '#d62728',  # красный
-            'hexagonal': '#9467bd',    # фиолетовый
-            'random': '#8c564b',       # коричневый
         }
 
         # Извлекаем паттерн из имени или колонки
@@ -857,9 +855,9 @@ def generate_stage8_figures():
         for name in df_c['name'].unique():
             subset = df_c[df_c['name'] == name]
             label = 'Гладкий' if name == 'Гладкий' else name[:20]
-            linestyle = '--' if name == 'Гладкий' else '-'
-            ax.plot(subset['c_um'], subset['P_loss_W'], linestyle + 'o',
-                    label=label, linewidth=2, markersize=6)
+            color = 'blue' if name == 'Гладкий' else 'green'
+            ax.plot(subset['c_um'], subset['P_loss_W'], '-o',
+                    label=label, linewidth=2, markersize=6, color=color)
 
         ax.set_xlabel('c, мкм')
         ax.set_ylabel('P_loss, Вт')
@@ -879,9 +877,9 @@ def generate_stage8_figures():
         for name in df_t['name'].unique():
             subset = df_t[df_t['name'] == name]
             label = 'Гладкий' if name == 'Гладкий' else name[:20]
-            linestyle = '--' if name == 'Гладкий' else '-'
-            ax.plot(subset['T_C'], subset['P_loss_W'], linestyle + 'o',
-                    label=label, linewidth=2, markersize=6)
+            color = 'blue' if name == 'Гладкий' else 'green'
+            ax.plot(subset['T_C'], subset['P_loss_W'], '-o',
+                    label=label, linewidth=2, markersize=6, color=color)
 
         ax.set_xlabel('T, °C')
         ax.set_ylabel('P_loss, Вт')
@@ -901,9 +899,9 @@ def generate_stage8_figures():
         for name in df_c['name'].unique():
             subset = df_c[df_c['name'] == name]
             label = 'Гладкий' if name == 'Гладкий' else name[:20]
-            linestyle = '--' if name == 'Гладкий' else '-'
-            ax.plot(subset['c_um'], subset['h_min_um'], linestyle + 'o',
-                    label=label, linewidth=2, markersize=6)
+            color = 'blue' if name == 'Гладкий' else 'green'
+            ax.plot(subset['c_um'], subset['h_min_um'], '-o',
+                    label=label, linewidth=2, markersize=6, color=color)
 
         ax.axhline(y=10, color='r', linestyle=':', alpha=0.7, label='h_min = 10 мкм')
         ax.set_xlabel('c, мкм')

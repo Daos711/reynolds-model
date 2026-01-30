@@ -85,7 +85,7 @@ TEMP_VALUES = [40, 50, 60, 70]
 # Сетка оптимизации текстуры
 FN_VALUES = [0.10, 0.20, 0.30, 0.40, 0.50]
 H_STAR_VALUES = [0.05, 0.10, 0.20, 0.30, 0.40]
-PATTERN_VALUES = ['phyllotaxis', 'regular', 'spiral']
+PATTERN_VALUES = ['regular', 'phyllotaxis']
 SECTOR_VALUES = [
     (0, 2*np.pi),              # full
     (np.pi/2, 3*np.pi/2),      # 90-270° (нагруженная зона)
@@ -1010,13 +1010,14 @@ def run_block5_robustness(top5: List[CaseResult], skip: bool = False):
     fig, axes = plt.subplots(1, 2, figsize=(14, 5))
 
     ax1 = axes[0]
-    for name in ['Гладкий'] + [c.name for c in candidates]:
+    for i, name in enumerate(['Гладкий'] + [c.name for c in candidates]):
         data = [r for r in results_c if r['name'] == name]
         if data:
             x = [r['c_um'] for r in data]
             y = [r['P_loss_W'] for r in data]
-            marker = 'o-' if name == 'Гладкий' else 's--'
-            ax1.plot(x, y, marker, label=name[:20], linewidth=2)
+            color = 'blue' if name == 'Гладкий' else ['green', 'red', 'orange'][i-1] if i > 0 else 'green'
+            marker = 'o' if name == 'Гладкий' else 's'
+            ax1.plot(x, y, '-', marker=marker, label=name[:20], linewidth=2, color=color)
     ax1.set_xlabel('c, мкм')
     ax1.set_ylabel('P_loss, Вт')
     ax1.set_title('P_loss vs Зазор c')
@@ -1025,13 +1026,14 @@ def run_block5_robustness(top5: List[CaseResult], skip: bool = False):
 
     # График P_loss vs T
     ax2 = axes[1]
-    for name in ['Гладкий'] + [c.name for c in candidates]:
+    for i, name in enumerate(['Гладкий'] + [c.name for c in candidates]):
         data = [r for r in results_t if r['name'] == name]
         if data:
             x = [r['T_C'] for r in data]
             y = [r['P_loss_W'] for r in data]
-            marker = 'o-' if name == 'Гладкий' else 's--'
-            ax2.plot(x, y, marker, label=name[:20], linewidth=2)
+            color = 'blue' if name == 'Гладкий' else ['green', 'red', 'orange'][i-1] if i > 0 else 'green'
+            marker = 'o' if name == 'Гладкий' else 's'
+            ax2.plot(x, y, '-', marker=marker, label=name[:20], linewidth=2, color=color)
     ax2.set_xlabel('T, °C')
     ax2.set_ylabel('P_loss, Вт')
     ax2.set_title('P_loss vs Температура T')
@@ -1045,13 +1047,14 @@ def run_block5_robustness(top5: List[CaseResult], skip: bool = False):
 
     # График h_min vs c (проверка ограничения)
     fig, ax = plt.subplots(figsize=(8, 5))
-    for name in ['Гладкий'] + [c.name for c in candidates]:
+    for i, name in enumerate(['Гладкий'] + [c.name for c in candidates]):
         data = [r for r in results_c if r['name'] == name]
         if data:
             x = [r['c_um'] for r in data]
             y = [r['h_min_um'] for r in data]
-            marker = 'o-' if name == 'Гладкий' else 's--'
-            ax.plot(x, y, marker, label=name[:20], linewidth=2)
+            color = 'blue' if name == 'Гладкий' else ['green', 'red', 'orange'][i-1] if i > 0 else 'green'
+            marker = 'o' if name == 'Гладкий' else 's'
+            ax.plot(x, y, '-', marker=marker, label=name[:20], linewidth=2, color=color)
     ax.axhline(10, color='red', linestyle=':', label='h_min = 10 мкм (граница)')
     ax.set_xlabel('c, мкм')
     ax.set_ylabel('h_min, мкм')
