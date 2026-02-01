@@ -455,6 +455,319 @@ def run_refinement(rsm_mu: dict, mode: str):
 
 
 # ============================================================================
+# CONFIRMATION RUN
+# ============================================================================
+
+def confirmation_run(rsm_mu: dict = None, rsm_W: dict = None):
+    """Подтверждающий расчёт оптимумов RSM."""
+    from bearing_solver import BearingConfig, solve_reynolds, SmoothFilmModel
+    from bearing_solver.forces import compute_forces, compute_friction
+
+    print("\n" + "=" * 60)
+    print("CONFIRMATION RUN")
+    print("=" * 60)
+
+    n_phi_grid, n_z_grid = GRID_FULL  # 120×40
+
+    # Получить оптимумы из RSM или использовать значения по умолчанию
+    if rsm_mu and 'error' not in rsm_mu:
+        opt_mu = find_optimum(rsm_mu, FACTOR_RANGES_EXTENDED, minimize=True)
+        mu_rsm_pred = opt_mu.get('response', 0.002432)
+        h_mu = opt_mu.get('h', 10e-6)
+        a_mu = opt_mu.get('a', 131.3e-6)
+        b_mu = opt_mu.get('b', 131.3e-6)
+        N_phi_mu = int(round(opt_mu.get('N_phi', 40)))
+        N_z_mu = int(round(opt_mu.get('N_z', 15)))
+    else:
+        mu_rsm_pred = 0.002432
+        h_mu, a_mu, b_mu = 10e-6, 131.3e-6, 131.3e-6
+        N_phi_mu, N_z_mu = 40, 15
+
+    if rsm_W and 'error' not in rsm_W:
+        opt_W = find_optimum(rsm_W, FACTOR_RANGES_EXTENDED, minimize=False)
+        W_rsm_pred = opt_W.get('response', 126199)
+        h_W = opt_W.get('h', 10e-6)
+        a_W = opt_W.get('a', 25e-6)
+        b_W = opt_W.get('b', 25e-6)
+        N_phi_W = int(round(opt_W.get('N_phi', 60)))
+        N_z_W = int(round(opt_W.get('N_z', 20)))
+    else:
+        W_rsm_pred = 126199
+        h_W, a_W, b_W = 10e-6, 25e-6, 25e-6
+        N_phi_W, N_z_W = 60, 20
+
+    # 1) Оптимум μ
+    print("\n1) Оптимум μ_friction:")
+    factors_mu = TextureFactors(
+        h=h_mu, a=a_mu, b=b_mu,
+        N_phi=N_phi_mu, N_z=N_z_mu,
+    )
+
+    print(f"   Параметры: h={factors_mu.h*1e6:.0f}мкм, a={factors_mu.a*1e6:.0f}мкм, "
+          f"b={factors_mu.b*1e6:.0f}мкм, N_phi={factors_mu.N_phi}, N_z={factors_mu.N_z}")
+    print(f"   fill_factor = {factors_mu.get_fill_factor(BEARING_CONFIG.R, BEARING_CONFIG.B)*100:.4f}%")
+
+    result_mu = run_single_case(
+        BEARING_CONFIG, factors_mu,
+        n_phi_grid=n_phi_grid, n_z_grid=n_z_grid,
+        compute_dynamics=False, find_phi0=True, verbose=False
+    )
+
+    mu_calc = result_mu.mu_friction
+    mu_error = abs(mu_calc - mu_rsm_pred) / mu_rsm_pred * 100
+
+    print(f"   RSM прогноз:     μ = {mu_rsm_pred:.6f}")
+    print(f"   Реальный расчёт: μ = {mu_calc:.6f}")
+    print(f"   Ошибка: {mu_error:.2f}%")
+    print(f"   W = {result_mu.W:.1f} Н")
+    print(f"   phi0 = {np.degrees(result_mu.phi0_equilibrium):.1f}°")
+
+    # 2) Оптимум W
+    print("\n2) Оптимум W:")
+    factors_W = TextureFactors(
+        h=h_W, a=a_W, b=b_W,
+        N_phi=N_phi_W, N_z=N_z_W,
+    )
+
+    print(f"   Параметры: h={factors_W.h*1e6:.0f}мкм, a={factors_W.a*1e6:.0f}мкм, "
+          f"b={factors_W.b*1e6:.0f}мкм, N_phi={factors_W.N_phi}, N_z={factors_W.N_z}")
+    print(f"   fill_factor = {factors_W.get_fill_factor(BEARING_CONFIG.R, BEARING_CONFIG.B)*100:.4f}%")
+
+    result_W = run_single_case(
+        BEARING_CONFIG, factors_W,
+        n_phi_grid=n_phi_grid, n_z_grid=n_z_grid,
+        compute_dynamics=False, find_phi0=True, verbose=False
+    )
+
+    W_calc = result_W.W
+    W_error = abs(W_calc - W_rsm_pred) / W_rsm_pred * 100
+
+    print(f"   RSM прогноз:     W = {W_rsm_pred:.1f} Н")
+    print(f"   Реальный расчёт: W = {W_calc:.1f} Н")
+    print(f"   Ошибка: {W_error:.2f}%")
+    print(f"   μ = {result_W.mu_friction:.6f}")
+    print(f"   phi0 = {np.degrees(result_W.phi0_equilibrium):.1f}°")
+
+    # 3) Гладкий подшипник
+    print("\n3) Гладкий подшипник (baseline):")
+
+    config_smooth = BearingConfig(
+        R=BEARING_CONFIG.R,
+        L=BEARING_CONFIG.B,
+        c=BEARING_CONFIG.c,
+        epsilon=BEARING_CONFIG.epsilon,
+        phi0=np.pi,
+        n_rpm=BEARING_CONFIG.n_rpm,
+        mu=BEARING_CONFIG.mu,
+        n_phi=n_phi_grid,
+        n_z=n_z_grid,
+    )
+
+    sol_smooth = solve_reynolds(config_smooth, film_model=SmoothFilmModel(config_smooth))
+    forces_smooth = compute_forces(sol_smooth, config_smooth)
+    friction_smooth = compute_friction(sol_smooth, config_smooth, forces_smooth)
+
+    mu_smooth = friction_smooth.mu_friction
+    W_smooth = forces_smooth.W
+
+    print(f"   μ_smooth = {mu_smooth:.6f}")
+    print(f"   W_smooth = {W_smooth:.1f} Н")
+
+    # 4) Сравнение
+    print("\n4) Сравнение с гладким:")
+    delta_mu_opt = (mu_calc - mu_smooth) / mu_smooth * 100
+    delta_W_opt = (W_calc - W_smooth) / W_smooth * 100
+
+    print(f"   Δμ (оптимум μ vs гладкий) = {delta_mu_opt:+.2f}%")
+    print(f"   ΔW (оптимум W vs гладкий) = {delta_W_opt:+.2f}%")
+
+    # Сохранить результаты
+    with open(OUT_DIR / 'confirmation_run.txt', 'w', encoding='utf-8') as f:
+        f.write("=" * 60 + "\n")
+        f.write("CONFIRMATION RUN\n")
+        f.write("=" * 60 + "\n\n")
+
+        f.write("1) ОПТИМУМ μ_friction\n")
+        f.write("-" * 40 + "\n")
+        f.write(f"h = {factors_mu.h*1e6:.0f} мкм\n")
+        f.write(f"a = {factors_mu.a*1e6:.0f} мкм\n")
+        f.write(f"b = {factors_mu.b*1e6:.0f} мкм\n")
+        f.write(f"N_phi = {factors_mu.N_phi}\n")
+        f.write(f"N_z = {factors_mu.N_z}\n")
+        f.write(f"fill_factor = {factors_mu.get_fill_factor(BEARING_CONFIG.R, BEARING_CONFIG.B)*100:.4f}%\n\n")
+        f.write(f"RSM прогноз:     μ = {mu_rsm_pred:.6f}\n")
+        f.write(f"Реальный расчёт: μ = {mu_calc:.6f}\n")
+        f.write(f"Ошибка: {mu_error:.2f}%\n")
+        f.write(f"W = {result_mu.W:.1f} Н\n\n")
+
+        f.write("2) ОПТИМУМ W\n")
+        f.write("-" * 40 + "\n")
+        f.write(f"h = {factors_W.h*1e6:.0f} мкм\n")
+        f.write(f"a = {factors_W.a*1e6:.0f} мкм\n")
+        f.write(f"b = {factors_W.b*1e6:.0f} мкм\n")
+        f.write(f"N_phi = {factors_W.N_phi}\n")
+        f.write(f"N_z = {factors_W.N_z}\n")
+        f.write(f"fill_factor = {factors_W.get_fill_factor(BEARING_CONFIG.R, BEARING_CONFIG.B)*100:.4f}%\n\n")
+        f.write(f"RSM прогноз:     W = {W_rsm_pred:.1f} Н\n")
+        f.write(f"Реальный расчёт: W = {W_calc:.1f} Н\n")
+        f.write(f"Ошибка: {W_error:.2f}%\n")
+        f.write(f"μ = {result_W.mu_friction:.6f}\n\n")
+
+        f.write("3) ГЛАДКИЙ ПОДШИПНИК (baseline)\n")
+        f.write("-" * 40 + "\n")
+        f.write(f"μ_smooth = {mu_smooth:.6f}\n")
+        f.write(f"W_smooth = {W_smooth:.1f} Н\n\n")
+
+        f.write("4) СРАВНЕНИЕ С ГЛАДКИМ\n")
+        f.write("-" * 40 + "\n")
+        f.write(f"Δμ (оптимум μ vs гладкий) = {delta_mu_opt:+.2f}%\n")
+        f.write(f"ΔW (оптимум W vs гладкий) = {delta_W_opt:+.2f}%\n")
+
+    print(f"\nСохранено: {OUT_DIR}/confirmation_run.txt")
+
+    return {
+        'mu_opt': result_mu,
+        'W_opt': result_W,
+        'smooth': {'mu': mu_smooth, 'W': W_smooth},
+        'errors': {'mu': mu_error, 'W': W_error},
+    }
+
+
+# ============================================================================
+# RSM КОЭФФИЦИЕНТЫ И ДИАГНОСТИКА
+# ============================================================================
+
+def print_rsm_coefficients(rsm_model: dict, response_name: str = 'mu_friction'):
+    """Вывести коэффициенты RSM модели."""
+
+    if rsm_model is None or 'error' in rsm_model:
+        print("RSM модель недоступна")
+        return
+
+    print("\n" + "=" * 60)
+    print(f"КОЭФФИЦИЕНТЫ RSM ({response_name})")
+    print("=" * 60)
+
+    feature_names = list(rsm_model['feature_names'])
+    coefficients = rsm_model['coefficients']
+    intercept = rsm_model['intercept']
+
+    print(f"\nR² = {rsm_model['r2']:.4f}")
+    print(f"Число точек: {rsm_model['n_points']}")
+    print(f"\nСвободный член: β₀ = {intercept:.6e}")
+
+    # Линейные эффекты
+    print("\nЛинейные эффекты:")
+    factor_names = ['h', 'a', 'b', 'N_phi', 'N_z']
+    for name in factor_names:
+        if name in feature_names:
+            idx = feature_names.index(name)
+            print(f"  β_{name:6s} = {coefficients[idx]:+.3e}")
+
+    # Квадратичные эффекты
+    print("\nКвадратичные эффекты:")
+    for name in factor_names:
+        feat = f"{name}^2"
+        if feat in feature_names:
+            idx = feature_names.index(feat)
+            print(f"  β_{feat:8s} = {coefficients[idx]:+.3e}")
+
+    # Взаимодействия (топ-5 по модулю)
+    print("\nВзаимодействия (топ-5 по модулю):")
+    interactions = []
+    for i, feat in enumerate(feature_names):
+        if ' ' in feat:  # взаимодействие типа "h a"
+            interactions.append((feat, coefficients[i]))
+    interactions.sort(key=lambda x: abs(x[1]), reverse=True)
+    for feat, coef in interactions[:5]:
+        print(f"  β_{feat:12s} = {coef:+.3e}")
+
+    # Сохранить в файл
+    with open(OUT_DIR / f'rsm_coefficients_{response_name}.txt', 'w', encoding='utf-8') as f:
+        f.write("=" * 60 + "\n")
+        f.write(f"КОЭФФИЦИЕНТЫ RSM ({response_name})\n")
+        f.write("=" * 60 + "\n\n")
+        f.write(f"R² = {rsm_model['r2']:.4f}\n")
+        f.write(f"Число точек: {rsm_model['n_points']}\n\n")
+        f.write(f"Свободный член: β₀ = {intercept:.6e}\n\n")
+
+        f.write("Линейные эффекты:\n")
+        for name in factor_names:
+            if name in feature_names:
+                idx = feature_names.index(name)
+                f.write(f"  β_{name} = {coefficients[idx]:+.3e}\n")
+
+        f.write("\nКвадратичные эффекты:\n")
+        for name in factor_names:
+            feat = f"{name}^2"
+            if feat in feature_names:
+                idx = feature_names.index(feat)
+                f.write(f"  β_{feat} = {coefficients[idx]:+.3e}\n")
+
+        f.write("\nВсе взаимодействия:\n")
+        for feat, coef in interactions:
+            f.write(f"  β_{feat} = {coef:+.3e}\n")
+
+    print(f"\nСохранено: {OUT_DIR}/rsm_coefficients_{response_name}.txt")
+
+
+def plot_residuals(df: pd.DataFrame, rsm_model: dict, response: str = 'mu_friction'):
+    """Построить графики остатков."""
+
+    if rsm_model is None or 'error' in rsm_model:
+        print("RSM модель недоступна для графика остатков")
+        return
+
+    fig, axes = plt.subplots(1, 2, figsize=(12, 5))
+
+    # Предсказания модели
+    factors = ['h', 'a', 'b', 'N_phi', 'N_z']
+    df_valid = df[df['valid'] & df[response].notna()]
+    X = df_valid[factors].values
+    y_actual = df_valid[response].values
+
+    poly = rsm_model['poly']
+    model = rsm_model['model']
+    X_poly = poly.transform(X)
+    y_pred = model.predict(X_poly)
+
+    residuals = y_actual - y_pred
+
+    # 1) Predicted vs Actual
+    ax1 = axes[0]
+    ax1.scatter(y_actual, y_pred, alpha=0.7, edgecolors='black', linewidth=0.5)
+    lims = [min(y_actual.min(), y_pred.min()), max(y_actual.max(), y_pred.max())]
+    ax1.plot(lims, lims, 'r--', linewidth=2, label='Идеальное совпадение')
+    ax1.set_xlabel('Actual', fontsize=12)
+    ax1.set_ylabel('Predicted', fontsize=12)
+    ax1.set_title(f'Predicted vs Actual ({response})', fontsize=14)
+    ax1.legend()
+    ax1.grid(True, alpha=0.3)
+
+    # 2) Residuals vs Fitted
+    ax2 = axes[1]
+    ax2.scatter(y_pred, residuals, alpha=0.7, edgecolors='black', linewidth=0.5)
+    ax2.axhline(y=0, color='r', linestyle='--', linewidth=2)
+    ax2.set_xlabel('Fitted values', fontsize=12)
+    ax2.set_ylabel('Residuals', fontsize=12)
+    ax2.set_title('Residuals vs Fitted', fontsize=14)
+    ax2.grid(True, alpha=0.3)
+
+    # Статистика остатков
+    rmse = np.sqrt(np.mean(residuals**2))
+    max_res = np.max(np.abs(residuals))
+    ax2.text(0.02, 0.98, f'RMSE = {rmse:.2e}\nMax |res| = {max_res:.2e}',
+             transform=ax2.transAxes, verticalalignment='top',
+             fontsize=10, bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.5))
+
+    fig.tight_layout()
+    fig.savefig(OUT_DIR / f'rsm_residuals_{response}.png', dpi=150, bbox_inches='tight')
+    plt.close(fig)
+
+    print(f"График остатков: {OUT_DIR}/rsm_residuals_{response}.png")
+
+
+# ============================================================================
 # ТЕСТОВЫЙ РАСЧЁТ ОДНОЙ ТОЧКИ
 # ============================================================================
 
@@ -597,6 +910,10 @@ def main():
                         help='Локальная доводка после RSM')
     parser.add_argument('--extended', action='store_true',
                         help='Расширенные диапазоны N_phi/N_z для большего эффекта текстуры')
+    parser.add_argument('--confirm', action='store_true',
+                        help='Подтверждающий расчёт оптимумов RSM')
+    parser.add_argument('--coeffs', action='store_true',
+                        help='Вывести коэффициенты RSM модели')
     parser.add_argument('--jobs', type=int, default=1,
                         help='Число параллельных процессов (1 = последовательно)')
     args = parser.parse_args()
@@ -612,6 +929,20 @@ def main():
         extended=args.extended
     )
     rsm_mu, rsm_W = analyze_results(results_df, suffix=suffix, factor_ranges=factor_ranges)
+
+    # График остатков
+    valid_df = results_df[results_df['valid']]
+    plot_residuals(valid_df, rsm_mu, 'mu_friction')
+    plot_residuals(valid_df, rsm_W, 'W')
+
+    # Коэффициенты RSM
+    if args.coeffs:
+        print_rsm_coefficients(rsm_mu, 'mu_friction')
+        print_rsm_coefficients(rsm_W, 'W')
+
+    # Confirmation run
+    if args.confirm:
+        confirmation_run(rsm_mu, rsm_W)
 
     if args.refine:
         run_refinement(rsm_mu, mode=args.mode)
