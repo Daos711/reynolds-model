@@ -60,6 +60,15 @@ FACTOR_RANGES = {
     'N_z':   (2, 6),               # рядов по z
 }
 
+# Расширенные диапазоны N для эксперимента с бо́льшим эффектом текстуры
+FACTOR_RANGES_EXTENDED = {
+    'h':     (10e-6, 210e-6),      # глубина: 10-210 мкм
+    'a':     (25e-6, 250e-6),      # полуось a: 25-250 мкм
+    'b':     (25e-6, 250e-6),      # полуось b: 25-250 мкм
+    'N_phi': (20, 60),             # рядов по φ (больше!)
+    'N_z':   (10, 20),             # рядов по z (больше!)
+}
+
 # Режимы сетки
 GRID_LITE = (60, 20)    # быстрый расчёт
 GRID_FULL = (120, 40)   # нормальный расчёт
@@ -107,11 +116,16 @@ def check_model_units():
 # ОСНОВНОЙ РАСЧЁТ
 # ============================================================================
 
-def run_study(mode: str = 'lite', compute_dynamics: bool = False, n_jobs: int = 1):
+def run_study(mode: str = 'lite', compute_dynamics: bool = False, n_jobs: int = 1,
+               extended: bool = False):
     """Запустить параметрическое исследование."""
 
+    suffix = f"{mode}_extended" if extended else mode
+    factor_ranges = FACTOR_RANGES_EXTENDED if extended else FACTOR_RANGES
+
     print("=" * 60)
-    print(f"ПАРАМЕТРИЧЕСКИЙ АНАЛИЗ ТЕКСТУРЫ — режим: {mode.upper()}")
+    print(f"ПАРАМЕТРИЧЕСКИЙ АНАЛИЗ ТЕКСТУРЫ — режим: {mode.upper()}" +
+          (" (EXTENDED)" if extended else ""))
     print("=" * 60)
 
     # Проверка единиц
@@ -130,13 +144,15 @@ def run_study(mode: str = 'lite', compute_dynamics: bool = False, n_jobs: int = 
     print(f"Режим: eps={BEARING_CONFIG.epsilon}, n={BEARING_CONFIG.n_rpm} rpm")
     print(f"Сетка: {n_phi}x{n_z}")
     print(f"Динамика: {'ДА' if compute_dynamics else 'НЕТ'}")
+    if extended:
+        print(f"Extended N: N_phi={factor_ranges['N_phi']}, N_z={factor_ranges['N_z']}")
 
     # Запустить
     start = time.time()
 
     results_df = run_parametric_study(
         pconfig=BEARING_CONFIG,
-        factor_ranges=FACTOR_RANGES,
+        factor_ranges=factor_ranges,
         n_phi_grid=n_phi,
         n_z_grid=n_z,
         compute_dynamics=compute_dynamics,
@@ -148,18 +164,22 @@ def run_study(mode: str = 'lite', compute_dynamics: bool = False, n_jobs: int = 
     print(f"\nВремя расчёта: {elapsed/60:.1f} мин")
 
     # Сохранить результаты
-    results_df.to_csv(OUT_DIR / f"results_{mode}.csv", index=False)
-    print(f"Результаты: {OUT_DIR}/results_{mode}.csv")
+    results_df.to_csv(OUT_DIR / f"results_{suffix}.csv", index=False)
+    print(f"Результаты: {OUT_DIR}/results_{suffix}.csv")
 
-    return results_df
+    return results_df, suffix, factor_ranges
 
 
 # ============================================================================
 # АНАЛИЗ РЕЗУЛЬТАТОВ
 # ============================================================================
 
-def analyze_results(results_df: pd.DataFrame, mode: str = 'lite'):
+def analyze_results(results_df: pd.DataFrame, suffix: str = 'lite',
+                    factor_ranges: dict = None):
     """Анализ и визуализация результатов."""
+
+    if factor_ranges is None:
+        factor_ranges = FACTOR_RANGES
 
     print("\n" + "=" * 60)
     print("АНАЛИЗ РЕЗУЛЬТАТОВ")
@@ -178,16 +198,18 @@ def analyze_results(results_df: pd.DataFrame, mode: str = 'lite'):
         return None, None
 
     # Статистика по метрикам
+    mu_min, mu_max = valid['mu_friction'].min(), valid['mu_friction'].max()
+    mu_range_pct = (mu_max - mu_min) / mu_min * 100
+
     print(f"\nСтатистика (валидные точки):")
-    print(f"  mu_friction: min={valid['mu_friction'].min():.6f}, "
-          f"max={valid['mu_friction'].max():.6f}, "
-          f"mean={valid['mu_friction'].mean():.6f}")
-    print(f"  W: min={valid['W'].min():.1f} Н, "
-          f"max={valid['W'].max():.1f} Н")
+    print(f"  mu_friction: min={mu_min:.6f}, max={mu_max:.6f}, "
+          f"range={mu_range_pct:.2f}%")
+    print(f"  W: min={valid['W'].min():.1f} Н, max={valid['W'].max():.1f} Н")
     print(f"  h_min: min={valid['h_min'].min()*1e6:.2f} мкм, "
           f"max={valid['h_min'].max()*1e6:.2f} мкм")
-    print(f"  fill_factor: min={valid['fill_factor'].min()*100:.1f}%, "
-          f"max={valid['fill_factor'].max()*100:.1f}%")
+    print(f"  fill_factor: min={valid['fill_factor'].min()*100:.4f}%, "
+          f"max={valid['fill_factor'].max()*100:.4f}%")
+    print(f"  N_total: min={valid['N_total'].min()}, max={valid['N_total'].max()}")
 
     # --- RSM для коэффициента трения ---
     print("\n--- RSM: Коэффициент трения ---")
@@ -199,7 +221,7 @@ def analyze_results(results_df: pd.DataFrame, mode: str = 'lite'):
     if 'error' not in rsm_mu:
         print(f"R^2 = {rsm_mu['r2']:.4f} (точек: {rsm_mu['n_points']})")
 
-        opt_mu = find_optimum(rsm_mu, FACTOR_RANGES, minimize=True)
+        opt_mu = find_optimum(rsm_mu, factor_ranges, minimize=True)
         if 'error' not in opt_mu:
             print(f"\nОптимум mu_friction (RSM):")
             print(f"  h = {opt_mu['h']*1e6:.1f} мкм")
@@ -219,7 +241,7 @@ def analyze_results(results_df: pd.DataFrame, mode: str = 'lite'):
     if 'error' not in rsm_W:
         print(f"R^2 = {rsm_W['r2']:.4f}")
 
-        opt_W = find_optimum(rsm_W, FACTOR_RANGES, minimize=False)
+        opt_W = find_optimum(rsm_W, factor_ranges, minimize=False)
         if 'error' not in opt_W:
             print(f"\nОптимум W (RSM):")
             print(f"  h = {opt_W['h']*1e6:.1f} мкм")
@@ -232,10 +254,10 @@ def analyze_results(results_df: pd.DataFrame, mode: str = 'lite'):
         print(f"Ошибка RSM: {rsm_W['error']}")
 
     # --- Графики ---
-    plot_results(valid, mode)
+    plot_results(valid, suffix)
 
     # --- Сводка ---
-    write_summary(valid, rsm_mu, rsm_W, opt_mu, opt_W, mode)
+    write_summary(valid, rsm_mu, rsm_W, opt_mu, opt_W, suffix, factor_ranges)
 
     return rsm_mu, rsm_W
 
@@ -313,10 +335,14 @@ def plot_results(df: pd.DataFrame, mode: str):
 
 
 def write_summary(df: pd.DataFrame, rsm_mu: dict, rsm_W: dict,
-                  opt_mu: dict, opt_W: dict, mode: str):
+                  opt_mu: dict, opt_W: dict, suffix: str,
+                  factor_ranges: dict = None):
     """Записать сводку."""
 
-    with open(OUT_DIR / f'summary_{mode}.txt', 'w', encoding='utf-8') as f:
+    if factor_ranges is None:
+        factor_ranges = FACTOR_RANGES
+
+    with open(OUT_DIR / f'summary_{suffix}.txt', 'w', encoding='utf-8') as f:
         f.write("=" * 60 + "\n")
         f.write("ПАРАМЕТРИЧЕСКИЙ АНАЛИЗ ТЕКСТУРЫ — СВОДКА\n")
         f.write("=" * 60 + "\n\n")
@@ -332,7 +358,7 @@ def write_summary(df: pd.DataFrame, rsm_mu: dict, rsm_W: dict,
 
         f.write("ДИАПАЗОНЫ ФАКТОРОВ\n")
         f.write("-" * 40 + "\n")
-        for name, (lo, hi) in FACTOR_RANGES.items():
+        for name, (lo, hi) in factor_ranges.items():
             if name in ['h', 'a', 'b']:
                 f.write(f"{name}: {lo*1e6:.0f} - {hi*1e6:.0f} мкм\n")
             else:
@@ -374,7 +400,7 @@ def write_summary(df: pd.DataFrame, rsm_mu: dict, rsm_W: dict,
 
         f.write("=" * 60 + "\n")
 
-    print(f"Сводка: {OUT_DIR}/summary_{mode}.txt")
+    print(f"Сводка: {OUT_DIR}/summary_{suffix}.txt")
 
 
 # ============================================================================
@@ -569,6 +595,8 @@ def main():
                         help='Только тестовый расчёт одной точки')
     parser.add_argument('--refine', action='store_true',
                         help='Локальная доводка после RSM')
+    parser.add_argument('--extended', action='store_true',
+                        help='Расширенные диапазоны N_phi/N_z для большего эффекта текстуры')
     parser.add_argument('--jobs', type=int, default=1,
                         help='Число параллельных процессов (1 = последовательно)')
     args = parser.parse_args()
@@ -577,8 +605,13 @@ def main():
         test_single_point()
         return
 
-    results_df = run_study(mode=args.mode, compute_dynamics=args.dynamics, n_jobs=args.jobs)
-    rsm_mu, rsm_W = analyze_results(results_df, mode=args.mode)
+    results_df, suffix, factor_ranges = run_study(
+        mode=args.mode,
+        compute_dynamics=args.dynamics,
+        n_jobs=args.jobs,
+        extended=args.extended
+    )
+    rsm_mu, rsm_W = analyze_results(results_df, suffix=suffix, factor_ranges=factor_ranges)
 
     if args.refine:
         run_refinement(rsm_mu, mode=args.mode)
