@@ -768,6 +768,259 @@ def plot_residuals(df: pd.DataFrame, rsm_model: dict, response: str = 'mu_fricti
 
 
 # ============================================================================
+# ИССЛЕДОВАНИЕ ВЛИЯНИЯ FILL-FACTOR
+# ============================================================================
+
+def run_fill_factor_study():
+    """Исследование влияния fill_factor на характеристики подшипника."""
+    from bearing_solver import BearingConfig, solve_reynolds, SmoothFilmModel
+    from bearing_solver.forces import compute_forces, compute_friction
+
+    print("\n" + "=" * 60)
+    print("ИССЛЕДОВАНИЕ ВЛИЯНИЯ FILL-FACTOR")
+    print("=" * 60)
+
+    R = BEARING_CONFIG.R
+    B = BEARING_CONFIG.B
+    S_total = 2 * np.pi * R * B  # площадь поверхности, м²
+
+    print(f"\nПодшипник: D={R*2*1000:.1f}мм, B={B*1000:.1f}мм")
+    print(f"Площадь поверхности: {S_total*1e6:.0f} мм²")
+
+    # Сначала посчитаем гладкий подшипник для сравнения
+    print("\n--- Расчёт гладкого подшипника ---")
+    config_smooth = BearingConfig(
+        R=R, L=B, c=BEARING_CONFIG.c,
+        epsilon=BEARING_CONFIG.epsilon, phi0=np.pi,
+        n_rpm=BEARING_CONFIG.n_rpm, mu=BEARING_CONFIG.mu,
+        n_phi=120, n_z=40,
+    )
+    sol_smooth = solve_reynolds(config_smooth, film_model=SmoothFilmModel(config_smooth))
+    forces_smooth = compute_forces(sol_smooth, config_smooth)
+    friction_smooth = compute_friction(sol_smooth, config_smooth, forces_smooth)
+
+    mu_smooth = friction_smooth.mu_friction
+    W_smooth = forces_smooth.W
+    print(f"   μ_smooth = {mu_smooth:.6f}")
+    print(f"   W_smooth = {W_smooth:.1f} Н")
+
+    results = []
+
+    # Фиксированная глубина (оптимальная по предыдущим результатам)
+    h_fixed = 20e-6  # 20 мкм
+
+    # Разные уровни fill_factor
+    fill_targets = [0.01, 0.02, 0.05, 0.10, 0.15, 0.20, 0.25, 0.30]
+
+    # Разное число лунок
+    N_configs = [
+        (30, 15),    # N=450
+        (50, 25),    # N=1250
+        (80, 40),    # N=3200
+        (120, 60),   # N=7200
+        (150, 75),   # N=11250
+    ]
+
+    print("\n--- Расчёты с текстурой ---")
+    print(f"{'fill%':>6} {'N_phi':>6} {'N_z':>5} {'N_tot':>6} {'a,мм':>7} "
+          f"{'gap,мм':>7} {'μ':>10} {'W,Н':>10} {'Δμ%':>7} {'ΔW%':>7}")
+    print("-" * 85)
+
+    for fill_target in fill_targets:
+        for N_phi, N_z in N_configs:
+            N_total = N_phi * N_z
+
+            # Вычислить размер лунки для заданного fill (при a=b)
+            # fill = N × π × a² / S_total
+            a_needed = np.sqrt(fill_target * S_total / (N_total * np.pi))
+
+            # Проверить что лунки не перекрываются
+            gap_phi = 2 * np.pi * R / N_phi  # расстояние между центрами по φ
+            gap_z = B / N_z                   # расстояние между центрами по z
+
+            # Лунка не должна превышать 90% от шага (с запасом)
+            max_safe_size = 0.45 * min(gap_phi, gap_z)  # 90% диаметра = 45% полуоси
+
+            if a_needed > max_safe_size:
+                # Перекрытие — пропускаем
+                continue
+
+            # Запустить расчёт
+            factors = TextureFactors(
+                h=h_fixed,
+                a=a_needed,
+                b=a_needed,
+                N_phi=N_phi,
+                N_z=N_z,
+            )
+
+            result = run_single_case(
+                BEARING_CONFIG, factors,
+                n_phi_grid=120, n_z_grid=40,
+                compute_dynamics=False, find_phi0=False,  # быстрее без поиска phi0
+                verbose=False
+            )
+
+            if not result.valid or np.isnan(result.mu_friction):
+                continue
+
+            fill_actual = result.fill_factor
+            delta_mu = (result.mu_friction - mu_smooth) / mu_smooth * 100
+            delta_W = (result.W - W_smooth) / W_smooth * 100
+            gap_actual = min(gap_phi, gap_z) - 2 * a_needed
+
+            results.append({
+                'fill_target': fill_target,
+                'fill_actual': fill_actual,
+                'N_phi': N_phi,
+                'N_z': N_z,
+                'N_total': N_total,
+                'h': h_fixed,
+                'a': a_needed,
+                'b': a_needed,
+                'gap_min': gap_actual,
+                'mu': result.mu_friction,
+                'W': result.W,
+                'delta_mu_pct': delta_mu,
+                'delta_W_pct': delta_W,
+            })
+
+            print(f"{fill_target*100:6.1f} {N_phi:6d} {N_z:5d} {N_total:6d} "
+                  f"{a_needed*1e3:7.3f} {gap_actual*1e3:7.3f} "
+                  f"{result.mu_friction:10.6f} {result.W:10.1f} "
+                  f"{delta_mu:+7.2f} {delta_W:+7.2f}")
+
+    if not results:
+        print("Нет валидных результатов!")
+        return None
+
+    df = pd.DataFrame(results)
+
+    # Статистика
+    print("\n" + "=" * 60)
+    print("СВОДКА")
+    print("=" * 60)
+
+    print(f"\nВсего расчётов: {len(df)}")
+    print(f"fill_factor: {df['fill_actual'].min()*100:.2f}% - {df['fill_actual'].max()*100:.2f}%")
+    print(f"Δμ: {df['delta_mu_pct'].min():+.2f}% - {df['delta_mu_pct'].max():+.2f}%")
+    print(f"ΔW: {df['delta_W_pct'].min():+.2f}% - {df['delta_W_pct'].max():+.2f}%")
+
+    # Сохранить CSV
+    df.to_csv(OUT_DIR / 'fill_factor_study.csv', index=False)
+    print(f"\nРезультаты: {OUT_DIR}/fill_factor_study.csv")
+
+    # График
+    plot_fill_factor_study(df, mu_smooth, W_smooth)
+
+    # Сводка
+    write_fill_factor_summary(df, mu_smooth, W_smooth)
+
+    return df
+
+
+def plot_fill_factor_study(df: pd.DataFrame, mu_smooth: float, W_smooth: float):
+    """Построить графики fill-factor study."""
+
+    fig, axes = plt.subplots(1, 2, figsize=(14, 5))
+
+    # Цвет по N_total
+    scatter_kwargs = dict(c=df['N_total'], cmap='viridis', alpha=0.8,
+                          edgecolors='black', linewidth=0.5, s=60)
+
+    # 1) μ vs fill_factor
+    ax1 = axes[0]
+    sc1 = ax1.scatter(df['fill_actual']*100, df['mu'], **scatter_kwargs)
+    ax1.axhline(mu_smooth, color='red', linestyle='--', linewidth=2, label=f'Гладкий: μ={mu_smooth:.6f}')
+    ax1.set_xlabel('Fill factor, %', fontsize=12)
+    ax1.set_ylabel('Коэффициент трения μ', fontsize=12)
+    ax1.set_title('Влияние fill-factor на трение', fontsize=14)
+    ax1.legend(loc='upper left')
+    ax1.grid(True, alpha=0.3)
+
+    # 2) W vs fill_factor
+    ax2 = axes[1]
+    sc2 = ax2.scatter(df['fill_actual']*100, df['W']/1000, **scatter_kwargs)
+    ax2.axhline(W_smooth/1000, color='red', linestyle='--', linewidth=2, label=f'Гладкий: W={W_smooth/1000:.1f} кН')
+    ax2.set_xlabel('Fill factor, %', fontsize=12)
+    ax2.set_ylabel('Несущая способность W, кН', fontsize=12)
+    ax2.set_title('Влияние fill-factor на несущую способность', fontsize=14)
+    ax2.legend(loc='upper right')
+    ax2.grid(True, alpha=0.3)
+
+    # Colorbar
+    cbar = fig.colorbar(sc1, ax=axes, label='Число лунок N_total', shrink=0.8)
+
+    fig.suptitle('Исследование влияния fill-factor текстуры', fontsize=16, fontweight='bold', y=1.02)
+    fig.tight_layout()
+    fig.savefig(OUT_DIR / 'fill_factor_study.png', dpi=150, bbox_inches='tight')
+    plt.close(fig)
+
+    print(f"График: {OUT_DIR}/fill_factor_study.png")
+
+    # Дополнительный график: Δμ и ΔW vs fill
+    fig2, axes2 = plt.subplots(1, 2, figsize=(14, 5))
+
+    ax1 = axes2[0]
+    ax1.scatter(df['fill_actual']*100, df['delta_mu_pct'], **scatter_kwargs)
+    ax1.axhline(0, color='red', linestyle='--', linewidth=2)
+    ax1.set_xlabel('Fill factor, %', fontsize=12)
+    ax1.set_ylabel('Δμ, %', fontsize=12)
+    ax1.set_title('Изменение трения относительно гладкого', fontsize=14)
+    ax1.grid(True, alpha=0.3)
+
+    ax2 = axes2[1]
+    sc2 = ax2.scatter(df['fill_actual']*100, df['delta_W_pct'], **scatter_kwargs)
+    ax2.axhline(0, color='red', linestyle='--', linewidth=2)
+    ax2.set_xlabel('Fill factor, %', fontsize=12)
+    ax2.set_ylabel('ΔW, %', fontsize=12)
+    ax2.set_title('Изменение несущей способности относительно гладкого', fontsize=14)
+    ax2.grid(True, alpha=0.3)
+
+    fig2.colorbar(sc2, ax=axes2, label='Число лунок N_total', shrink=0.8)
+    fig2.tight_layout()
+    fig2.savefig(OUT_DIR / 'fill_factor_delta.png', dpi=150, bbox_inches='tight')
+    plt.close(fig2)
+
+    print(f"График: {OUT_DIR}/fill_factor_delta.png")
+
+
+def write_fill_factor_summary(df: pd.DataFrame, mu_smooth: float, W_smooth: float):
+    """Записать сводку fill-factor study."""
+
+    with open(OUT_DIR / 'fill_factor_summary.txt', 'w', encoding='utf-8') as f:
+        f.write("=" * 60 + "\n")
+        f.write("ИССЛЕДОВАНИЕ ВЛИЯНИЯ FILL-FACTOR\n")
+        f.write("=" * 60 + "\n\n")
+
+        f.write("ГЛАДКИЙ ПОДШИПНИК (baseline)\n")
+        f.write("-" * 40 + "\n")
+        f.write(f"μ_smooth = {mu_smooth:.6f}\n")
+        f.write(f"W_smooth = {W_smooth:.1f} Н\n\n")
+
+        f.write("СТАТИСТИКА\n")
+        f.write("-" * 40 + "\n")
+        f.write(f"Число расчётов: {len(df)}\n")
+        f.write(f"fill_factor: {df['fill_actual'].min()*100:.2f}% - {df['fill_actual'].max()*100:.2f}%\n")
+        f.write(f"Δμ: {df['delta_mu_pct'].min():+.2f}% - {df['delta_mu_pct'].max():+.2f}%\n")
+        f.write(f"ΔW: {df['delta_W_pct'].min():+.2f}% - {df['delta_W_pct'].max():+.2f}%\n\n")
+
+        # Агрегация по fill_target
+        f.write("РЕЗУЛЬТАТЫ ПО УРОВНЯМ FILL-FACTOR\n")
+        f.write("-" * 40 + "\n")
+        f.write(f"{'fill%':>8} {'Δμ_mean%':>10} {'ΔW_mean%':>10} {'N расчётов':>12}\n")
+
+        for fill_t in sorted(df['fill_target'].unique()):
+            subset = df[df['fill_target'] == fill_t]
+            f.write(f"{fill_t*100:8.1f} {subset['delta_mu_pct'].mean():+10.2f} "
+                    f"{subset['delta_W_pct'].mean():+10.2f} {len(subset):12d}\n")
+
+        f.write("\n" + "=" * 60 + "\n")
+
+    print(f"Сводка: {OUT_DIR}/fill_factor_summary.txt")
+
+
+# ============================================================================
 # ТЕСТОВЫЙ РАСЧЁТ ОДНОЙ ТОЧКИ
 # ============================================================================
 
@@ -914,12 +1167,18 @@ def main():
                         help='Подтверждающий расчёт оптимумов RSM')
     parser.add_argument('--coeffs', action='store_true',
                         help='Вывести коэффициенты RSM модели')
+    parser.add_argument('--fill-study', action='store_true',
+                        help='Исследование влияния fill-factor (1-30%%)')
     parser.add_argument('--jobs', type=int, default=1,
                         help='Число параллельных процессов (1 = последовательно)')
     args = parser.parse_args()
 
     if args.test:
         test_single_point()
+        return
+
+    if getattr(args, 'fill_study', False):
+        run_fill_factor_study()
         return
 
     results_df, suffix, factor_ranges = run_study(
