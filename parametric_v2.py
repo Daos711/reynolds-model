@@ -189,77 +189,57 @@ def create_H_textured(H0: np.ndarray, texture: TextureParams,
 # РЕШАТЕЛЬ РЕЙНОЛЬДСА (NUMBA)
 # ============================================================================
 
-@njit
+@njit(nogil=True)
 def solve_reynolds_numba(H: np.ndarray, d_phi: float, d_Z: float,
                          R: float, L: float,
                          omega: float = 1.5, tol: float = 1e-5,
                          max_iter: int = 20000) -> Tuple[np.ndarray, float, int]:
     """
     Решатель уравнения Рейнольдса методом Гаусса-Зейделя.
-
-    Безразмерное уравнение:
-        ∂/∂φ(H³ ∂P/∂φ) + (D/L)² ∂/∂Z(H³ ∂P/∂Z) = ∂H/∂φ
-
-    Args:
-        H: безразмерный зазор (N_Z × N_phi)
-        d_phi: шаг по φ
-        d_Z: шаг по Z
-        R: радиус подшипника
-        L: длина подшипника
-        omega: параметр релаксации (1.0-1.8)
-        tol: точность сходимости
-        max_iter: максимум итераций
-
-    Returns:
-        P: давление (безразмерное)
-        delta: финальная погрешность
-        iteration: число итераций
+    ТОЧНАЯ КОПИЯ из программы пользователя.
     """
     N_Z, N_phi = H.shape
     P = np.zeros((N_Z, N_phi))
 
-    # Вычисляем H на полуцелых узлах
-    H_i_plus_half = np.zeros((N_Z, N_phi))
-    H_i_minus_half = np.zeros((N_Z, N_phi))
-    H_j_plus_half = np.zeros((N_Z, N_phi))
-    H_j_minus_half = np.zeros((N_Z, N_phi))
+    # Вычисляем H на полуцелых узлах (как в оригинале)
+    H_i_plus_half = 0.5 * (H[:, :-1] + H[:, 1:])  # (N_Z, N_phi - 1)
+    H_i_minus_half = np.hstack((H_i_plus_half[:, -1:], H_i_plus_half[:, :-1]))
 
-    for i in range(N_Z):
-        for j in range(N_phi - 1):
-            H_i_plus_half[i, j] = 0.5 * (H[i, j] + H[i, j + 1])
-        H_i_plus_half[i, N_phi - 1] = 0.5 * (H[i, N_phi - 1] + H[i, 0])
-
-    for i in range(N_Z):
-        for j in range(1, N_phi):
-            H_i_minus_half[i, j] = 0.5 * (H[i, j] + H[i, j - 1])
-        H_i_minus_half[i, 0] = 0.5 * (H[i, 0] + H[i, N_phi - 1])
-
-    for i in range(N_Z - 1):
-        for j in range(N_phi):
-            H_j_plus_half[i, j] = 0.5 * (H[i, j] + H[i + 1, j])
-
-    for i in range(1, N_Z):
-        for j in range(N_phi):
-            H_j_minus_half[i, j] = 0.5 * (H[i, j] + H[i - 1, j])
+    H_j_plus_half = 0.5 * (H[:-1, :] + H[1:, :])  # (N_Z - 1, N_phi)
+    H_j_minus_half = np.vstack((H_j_plus_half[-1:, :], H_j_plus_half[:-1, :]))
 
     # Коэффициент (D/L)²
     D_over_L = 2 * R / L
     alpha_sq = (D_over_L * d_phi / d_Z)**2
 
-    # Коэффициенты A, B, C, D
-    A = H_i_plus_half**3
-    B = H_i_minus_half**3
-    C = alpha_sq * H_j_plus_half**3
+    # Коэффициенты
+    A_coef = H_i_plus_half**3
+    B_coef = H_i_minus_half**3
+    C_coef = alpha_sq * H_j_plus_half**3
     D_coef = alpha_sq * H_j_minus_half**3
 
-    # Суммарный коэффициент E
-    E = A + B + C + D_coef
+    # Расширяем до полного размера
+    A_full = np.zeros((N_Z, N_phi))
+    B_full = np.zeros((N_Z, N_phi))
+    C_full = np.zeros((N_Z, N_phi))
+    D_full = np.zeros((N_Z, N_phi))
 
-    # Правая часть F = d_phi * (H_{i+1/2} - H_{i-1/2})
-    F = np.zeros((N_Z, N_phi))
-    for i in range(N_Z):
-        for j in range(N_phi):
-            F[i, j] = d_phi * (H_i_plus_half[i, j] - H_i_minus_half[i, j])
+    A_full[:, :-1] = A_coef
+    A_full[:, -1] = A_coef[:, 0]
+    B_full[:, 1:] = B_coef
+    B_full[:, 0] = B_coef[:, -1]
+    C_full[:-1, :] = C_coef
+    C_full[-1, :] = C_coef[0, :]
+    D_full[1:, :] = D_coef
+    D_full[0, :] = D_coef[-1, :]
+
+    E = A_full + B_full + C_full + D_full
+
+    # Правая часть
+    F = d_phi * (H_i_plus_half - H_i_minus_half)
+    F_full = np.zeros((N_Z, N_phi))
+    F_full[:, :-1] = F
+    F_full[:, -1] = F[:, 0]
 
     # Итерационный процесс
     delta = 1.0
@@ -271,47 +251,28 @@ def solve_reynolds_numba(H: np.ndarray, d_phi: float, d_Z: float,
 
         for i in range(1, N_Z - 1):
             for j in range(1, N_phi - 1):
-                Ai = A[i, j]
-                Bi = B[i, j]
-                Ci = C[i, j]
-                Di = D_coef[i, j]
-                Ei = E[i, j]
-                Fi = F[i, j]
+                P_old = P[i, j]
+                P_new = (A_full[i, j] * P[i, (j+1) % N_phi] +
+                        B_full[i, j] * P[i, (j-1) % N_phi] +
+                        C_full[i, j] * P[i+1, j] +
+                        D_full[i, j] * P[i-1, j] - F_full[i, j]) / E[i, j]
 
-                P_old_ij = P[i, j]
-
-                # Индексы с периодичностью по φ
-                j_plus = (j + 1) % N_phi
-                j_minus = (j - 1 + N_phi) % N_phi
-
-                # Обновление давления
-                P_new = (Ai * P[i, j_plus] + Bi * P[i, j_minus] +
-                        Ci * P[i + 1, j] + Di * P[i - 1, j] - Fi) / Ei
-
-                # Условие кавитации: P >= 0
                 if P_new < 0:
                     P_new = 0.0
 
-                # Релаксация
-                P[i, j] = P_old_ij + omega * (P_new - P_old_ij)
-
-                delta += abs(P[i, j] - P_old_ij)
+                P[i, j] = P_old + omega * (P_new - P_old)
+                delta += abs(P[i, j] - P_old)
                 norm_P += abs(P[i, j])
 
         # Периодические граничные условия по φ
-        for i in range(N_Z):
-            P[i, 0] = P[i, N_phi - 2]
-            P[i, N_phi - 1] = P[i, 1]
+        P[:, 0] = P[:, -2]
+        P[:, -1] = P[:, 1]
 
         # Граничные условия Дирихле по Z
-        for j in range(N_phi):
-            P[0, j] = 0.0
-            P[N_Z - 1, j] = 0.0
+        P[0, :] = 0.0
+        P[-1, :] = 0.0
 
-        # Нормализация погрешности
-        if norm_P > 1e-10:
-            delta /= norm_P
-
+        delta /= (norm_P + 1e-8)
         iteration += 1
 
     return P, delta, iteration
@@ -888,6 +849,8 @@ def main():
     parser.add_argument('--h', type=float, default=10.0, help='Глубина лунки, мкм')
     parser.add_argument('--N-phi', type=int, default=8, help='Число лунок по φ')
     parser.add_argument('--N-z', type=int, default=11, help='Число лунок по Z')
+    parser.add_argument('--phi-start', type=float, default=90, help='Начало зоны текстуры, градусы')
+    parser.add_argument('--phi-end', type=float, default=270, help='Конец зоны текстуры, градусы')
 
     # Параметры сетки
     parser.add_argument('--mesh', type=int, default=100, help='Размер сетки (100/200/500)')
@@ -912,6 +875,8 @@ def main():
         h=args.h * 1e-6,  # мкм → м
         N_phi=args.N_phi,
         N_z=args.N_z,
+        phi_min=np.radians(args.phi_start),
+        phi_max=np.radians(args.phi_end),
     )
 
     mesh = MeshParams(num_phi=args.mesh, num_z=args.mesh)
