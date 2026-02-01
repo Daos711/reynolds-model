@@ -62,9 +62,9 @@ class TextureFactors:
     N_phi: int       # число рядов по φ
     N_z: int         # число рядов по z
 
-    # Зона текстурирования (опционально)
-    phi_min: float = 0.0
-    phi_max: float = 2 * np.pi
+    # Зона текстурирования (по умолчанию: сходящийся зазор 90°-270°)
+    phi_min: float = np.pi / 2      # начало зоны (рад), 90°
+    phi_max: float = 3 * np.pi / 2  # конец зоны (рад), 270°
 
     def validate(self, R: float, B: float) -> bool:
         """Проверить, что лунки не перекрываются."""

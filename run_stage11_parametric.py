@@ -1021,6 +1021,256 @@ def write_fill_factor_summary(df: pd.DataFrame, mu_smooth: float, W_smooth: floa
 
 
 # ============================================================================
+# ИССЛЕДОВАНИЕ ВЛИЯНИЯ УГЛОВОЙ ЗОНЫ ТЕКСТУРЫ
+# ============================================================================
+
+def run_zone_study():
+    """Исследование влияния углового диапазона размещения лунок."""
+    from bearing_solver import BearingConfig, solve_reynolds, SmoothFilmModel
+    from bearing_solver.forces import compute_forces, compute_friction
+
+    print("\n" + "=" * 60)
+    print("ИССЛЕДОВАНИЕ ВЛИЯНИЯ УГЛОВОЙ ЗОНЫ ТЕКСТУРЫ")
+    print("=" * 60)
+
+    n_phi_grid, n_z_grid = GRID_FULL  # 120×40
+
+    # Сначала гладкий подшипник
+    print("\n--- Расчёт гладкого подшипника ---")
+    config_smooth = BearingConfig(
+        R=BEARING_CONFIG.R, L=BEARING_CONFIG.B, c=BEARING_CONFIG.c,
+        epsilon=BEARING_CONFIG.epsilon, phi0=np.pi,
+        n_rpm=BEARING_CONFIG.n_rpm, mu=BEARING_CONFIG.mu,
+        n_phi=n_phi_grid, n_z=n_z_grid,
+    )
+    sol_smooth = solve_reynolds(config_smooth, film_model=SmoothFilmModel(config_smooth))
+    forces_smooth = compute_forces(sol_smooth, config_smooth)
+    friction_smooth = compute_friction(sol_smooth, config_smooth, forces_smooth)
+
+    mu_smooth = friction_smooth.mu_friction
+    W_smooth = forces_smooth.W
+    print(f"   μ_smooth = {mu_smooth:.6f}")
+    print(f"   W_smooth = {W_smooth:.1f} Н")
+
+    # Угловые зоны для сравнения (в градусах)
+    # φ=180° - минимальный зазор (h_min), φ=0° - максимальный зазор
+    # Зона сходящегося зазора: 90°-180° (где зазор уменьшается)
+    # Зона расходящегося: 180°-270° (где зазор увеличивается)
+    zones = [
+        ("0°-360° (полный)", 0, 360),
+        ("45°-315°", 45, 315),
+        ("60°-300°", 60, 300),
+        ("90°-270° (конвергентн.)", 90, 270),  # по умолчанию
+        ("120°-240°", 120, 240),
+        ("135°-225° (узкая)", 135, 225),
+        ("90°-180° (только сход.)", 90, 180),
+        ("180°-270° (только расх.)", 180, 270),
+    ]
+
+    # Параметры текстуры (типичные для хорошего эффекта)
+    h_fixed = 50e-6    # 50 мкм
+    a_fixed = 150e-6   # 150 мкм
+    b_fixed = 150e-6   # 150 мкм
+    N_phi = 40         # рядов по φ (в пределах зоны)
+    N_z = 15           # рядов по z
+
+    results = []
+
+    print("\n--- Расчёты с текстурой ---")
+    print(f"{'Зона':<25} {'φ_min':>6} {'φ_max':>6} {'N_dim':>6} "
+          f"{'fill%':>6} {'μ':>10} {'W,Н':>10} {'Δμ%':>7} {'ΔW%':>7}")
+    print("-" * 100)
+
+    for zone_name, phi_min_deg, phi_max_deg in zones:
+        phi_min_rad = np.radians(phi_min_deg)
+        phi_max_rad = np.radians(phi_max_deg)
+
+        # Создаём факторы с этой зоной
+        factors = TextureFactors(
+            h=h_fixed,
+            a=a_fixed,
+            b=b_fixed,
+            N_phi=N_phi,
+            N_z=N_z,
+            phi_min=phi_min_rad,
+            phi_max=phi_max_rad,
+        )
+
+        result = run_single_case(
+            BEARING_CONFIG, factors,
+            n_phi_grid=n_phi_grid, n_z_grid=n_z_grid,
+            compute_dynamics=False, find_phi0=True,
+            verbose=False
+        )
+
+        if not result.valid or np.isnan(result.mu_friction):
+            print(f"{zone_name:<25} {phi_min_deg:>6} {phi_max_deg:>6} INVALID")
+            continue
+
+        fill = factors.get_fill_factor(BEARING_CONFIG.R, BEARING_CONFIG.B)
+        delta_mu = (result.mu_friction - mu_smooth) / mu_smooth * 100
+        delta_W = (result.W - W_smooth) / W_smooth * 100
+        N_total = factors.N_total
+
+        results.append({
+            'zone_name': zone_name,
+            'phi_min_deg': phi_min_deg,
+            'phi_max_deg': phi_max_deg,
+            'N_total': N_total,
+            'fill_factor': fill,
+            'mu': result.mu_friction,
+            'W': result.W,
+            'phi0_eq': np.degrees(result.phi0_equilibrium),
+            'delta_mu_pct': delta_mu,
+            'delta_W_pct': delta_W,
+        })
+
+        print(f"{zone_name:<25} {phi_min_deg:>6} {phi_max_deg:>6} {N_total:>6} "
+              f"{fill*100:>6.2f} {result.mu_friction:>10.6f} {result.W:>10.1f} "
+              f"{delta_mu:>+7.2f} {delta_W:>+7.2f}")
+
+    if not results:
+        print("Нет валидных результатов!")
+        return None
+
+    df = pd.DataFrame(results)
+
+    # Статистика
+    print("\n" + "=" * 60)
+    print("СВОДКА")
+    print("=" * 60)
+
+    # Найти лучшую зону по μ и по W
+    best_mu_idx = df['delta_mu_pct'].idxmin()
+    best_W_idx = df['delta_W_pct'].idxmax()
+
+    print(f"\nГладкий подшипник: μ={mu_smooth:.6f}, W={W_smooth:.1f} Н")
+
+    print(f"\nЛучшая зона для СНИЖЕНИЯ трения:")
+    best_mu = df.loc[best_mu_idx]
+    print(f"   {best_mu['zone_name']}")
+    print(f"   Δμ = {best_mu['delta_mu_pct']:+.2f}%, ΔW = {best_mu['delta_W_pct']:+.2f}%")
+
+    print(f"\nЛучшая зона для ПОВЫШЕНИЯ W:")
+    best_W = df.loc[best_W_idx]
+    print(f"   {best_W['zone_name']}")
+    print(f"   Δμ = {best_W['delta_mu_pct']:+.2f}%, ΔW = {best_W['delta_W_pct']:+.2f}%")
+
+    # Сохранить
+    df.to_csv(OUT_DIR / 'zone_study.csv', index=False)
+    print(f"\nРезультаты: {OUT_DIR}/zone_study.csv")
+
+    # График
+    plot_zone_study(df, mu_smooth, W_smooth)
+
+    # Сводка
+    write_zone_study_summary(df, mu_smooth, W_smooth)
+
+    return df
+
+
+def plot_zone_study(df: pd.DataFrame, mu_smooth: float, W_smooth: float):
+    """Построить графики zone-study."""
+
+    fig, axes = plt.subplots(1, 2, figsize=(14, 6))
+
+    # Ширина зоны
+    zone_width = df['phi_max_deg'] - df['phi_min_deg']
+
+    # 1) Δμ vs ширина зоны
+    ax1 = axes[0]
+    colors = plt.cm.RdYlGn_r(np.linspace(0.2, 0.8, len(df)))  # красный=плохо, зелёный=хорошо (инвертирован для μ)
+
+    bars1 = ax1.bar(range(len(df)), df['delta_mu_pct'], color=colors, edgecolor='black', linewidth=0.5)
+    ax1.axhline(0, color='black', linestyle='-', linewidth=1)
+    ax1.set_xticks(range(len(df)))
+    ax1.set_xticklabels(df['zone_name'], rotation=45, ha='right', fontsize=9)
+    ax1.set_ylabel('Δμ, %', fontsize=12)
+    ax1.set_title('Изменение трения по зонам', fontsize=14)
+    ax1.grid(True, alpha=0.3, axis='y')
+
+    # Аннотация значений
+    for i, (bar, val) in enumerate(zip(bars1, df['delta_mu_pct'])):
+        ax1.text(bar.get_x() + bar.get_width()/2, bar.get_height() + 0.5,
+                f'{val:+.1f}%', ha='center', va='bottom', fontsize=8)
+
+    # 2) ΔW vs ширина зоны
+    ax2 = axes[1]
+    colors = plt.cm.RdYlGn(np.linspace(0.2, 0.8, len(df)))  # зелёный=хорошо для W
+
+    bars2 = ax2.bar(range(len(df)), df['delta_W_pct'], color=colors, edgecolor='black', linewidth=0.5)
+    ax2.axhline(0, color='black', linestyle='-', linewidth=1)
+    ax2.set_xticks(range(len(df)))
+    ax2.set_xticklabels(df['zone_name'], rotation=45, ha='right', fontsize=9)
+    ax2.set_ylabel('ΔW, %', fontsize=12)
+    ax2.set_title('Изменение несущей способности по зонам', fontsize=14)
+    ax2.grid(True, alpha=0.3, axis='y')
+
+    for i, (bar, val) in enumerate(zip(bars2, df['delta_W_pct'])):
+        y_pos = bar.get_height() + 0.5 if val >= 0 else bar.get_height() - 1.5
+        ax2.text(bar.get_x() + bar.get_width()/2, y_pos,
+                f'{val:+.1f}%', ha='center', va='bottom' if val >= 0 else 'top', fontsize=8)
+
+    fig.suptitle('Влияние углового диапазона текстуры на характеристики', fontsize=16, fontweight='bold')
+    fig.tight_layout()
+    fig.savefig(OUT_DIR / 'zone_study.png', dpi=150, bbox_inches='tight')
+    plt.close(fig)
+
+    print(f"График: {OUT_DIR}/zone_study.png")
+
+
+def write_zone_study_summary(df: pd.DataFrame, mu_smooth: float, W_smooth: float):
+    """Записать сводку zone-study."""
+
+    with open(OUT_DIR / 'zone_study_summary.txt', 'w', encoding='utf-8') as f:
+        f.write("=" * 60 + "\n")
+        f.write("ИССЛЕДОВАНИЕ ВЛИЯНИЯ УГЛОВОЙ ЗОНЫ ТЕКСТУРЫ\n")
+        f.write("=" * 60 + "\n\n")
+
+        f.write("ГЛАДКИЙ ПОДШИПНИК (baseline)\n")
+        f.write("-" * 40 + "\n")
+        f.write(f"μ_smooth = {mu_smooth:.6f}\n")
+        f.write(f"W_smooth = {W_smooth:.1f} Н\n\n")
+
+        f.write("ФИЗИКА ЯВЛЕНИЯ\n")
+        f.write("-" * 40 + "\n")
+        f.write("φ = 0° (360°) — максимальный зазор (h_max)\n")
+        f.write("φ = 180° — минимальный зазор (h_min)\n")
+        f.write("90°-180° — сходящийся зазор (convergent wedge)\n")
+        f.write("180°-270° — расходящийся зазор (divergent)\n\n")
+
+        f.write("РЕЗУЛЬТАТЫ ПО ЗОНАМ\n")
+        f.write("-" * 40 + "\n")
+        f.write(f"{'Зона':<25} {'Δμ%':>8} {'ΔW%':>8}\n")
+        for _, row in df.iterrows():
+            f.write(f"{row['zone_name']:<25} {row['delta_mu_pct']:>+8.2f} {row['delta_W_pct']:>+8.2f}\n")
+
+        f.write("\n")
+
+        # Лучшие зоны
+        best_mu_idx = df['delta_mu_pct'].idxmin()
+        best_W_idx = df['delta_W_pct'].idxmax()
+
+        f.write("ЛУЧШАЯ ЗОНА ДЛЯ СНИЖЕНИЯ ТРЕНИЯ\n")
+        f.write("-" * 40 + "\n")
+        best_mu = df.loc[best_mu_idx]
+        f.write(f"Зона: {best_mu['zone_name']}\n")
+        f.write(f"Δμ = {best_mu['delta_mu_pct']:+.2f}%\n")
+        f.write(f"ΔW = {best_mu['delta_W_pct']:+.2f}%\n\n")
+
+        f.write("ЛУЧШАЯ ЗОНА ДЛЯ ПОВЫШЕНИЯ W\n")
+        f.write("-" * 40 + "\n")
+        best_W = df.loc[best_W_idx]
+        f.write(f"Зона: {best_W['zone_name']}\n")
+        f.write(f"Δμ = {best_W['delta_mu_pct']:+.2f}%\n")
+        f.write(f"ΔW = {best_W['delta_W_pct']:+.2f}%\n\n")
+
+        f.write("=" * 60 + "\n")
+
+    print(f"Сводка: {OUT_DIR}/zone_study_summary.txt")
+
+
+# ============================================================================
 # ТЕСТОВЫЙ РАСЧЁТ ОДНОЙ ТОЧКИ
 # ============================================================================
 
@@ -1169,6 +1419,8 @@ def main():
                         help='Вывести коэффициенты RSM модели')
     parser.add_argument('--fill-study', action='store_true',
                         help='Исследование влияния fill-factor (1-30%%)')
+    parser.add_argument('--zone-study', action='store_true',
+                        help='Исследование влияния углового диапазона текстуры')
     parser.add_argument('--jobs', type=int, default=1,
                         help='Число параллельных процессов (1 = последовательно)')
     args = parser.parse_args()
@@ -1179,6 +1431,10 @@ def main():
 
     if getattr(args, 'fill_study', False):
         run_fill_factor_study()
+        return
+
+    if getattr(args, 'zone_study', False):
+        run_zone_study()
         return
 
     results_df, suffix, factor_ranges = run_study(
